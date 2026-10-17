@@ -9,7 +9,26 @@ MEMORY {
 SECTIONS {
 	.fw_header : { __image_start = .; KEEP(*(.fw_header)) } > CODE
 	.init : { KEEP(*(.init)) } > CODE
-	.text : { *(.text .text.*) } > CODE
+	/* Hot code of each core contiguous: core 0 first, then core 1, the
+	 * rest (boot, trap, park) last.
+	 */
+	.text : {
+		*(.text.core0_loop*)
+		*(.text.native_txfree*) *(.text.txfree_walk*) *(.text.tx_pool_publish*)
+		*(.text.pn_service_run*)
+		*(.text.native_up_front*) *(.text.up_front_one*)
+		*(.text.native_rx_security_view*) *(.text.rx_parse_view*)
+		*(.text.pv_get32*) *(.text.pv_byte*) *(.text.pv_word*)
+		*(.text.native_transmit*) *(.text.native_download*)
+		*(.text.native_forward_ring*) *(.text.tx_pool_arm*)
+		*(.text.core1_loop*)
+		*(.text.native_ppe_service*) *(.text.native_ppe_pop*)
+		*(.text.native_up_back*) *(.text.up_back_one*) *(.text.up_back_flush*)
+		*(.text.native_ppe_queue*) *(.text.rx_deliver_words*)
+		*(.text.native_rx_refill*) *(.text.native_rx_release*)
+		*(.text.pn_compare*) *(.text.st_load*) *(.text.up_quiet*)
+		*(.text .text.*)
+	} > CODE
 	.rodata : { *(.rodata .rodata.*) } > CODE
 	__image_size = . - __image_start;
 	__entry_offset = _start - __image_start;

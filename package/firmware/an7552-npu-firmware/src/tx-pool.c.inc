@@ -10,9 +10,7 @@
  * The state lives in cached DDR between the stacks and the replay table; no
  * other agent reads it.
  */
-#ifndef TX_POOL_ADDR
 #define TX_POOL_ADDR 0x84104000U
-#endif
 #define TX_POOL_TOKENS AN7552_DIRECT_TOKENS
 #define TX_TOKEN_VALID 0x8000U
 #define TX_TOKEN_BAND 0x4000U

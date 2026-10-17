@@ -5,7 +5,7 @@
 /* Replay entry word access, through the batch cache when one is given. */
 #define EG(i) (pc ? pc_get(pc, (i)) : entry[i])
 #define ES(i, value) do { if (pc) pc_set(pc, (i), (value)); else entry[i] = (value); } while (0)
-static uint32_t native_rx_security_view(struct pkt_view *v, uint32_t length,
+__attribute__((noinline)) static uint32_t native_rx_security_view(struct pkt_view *v, uint32_t length,
 					uint32_t *cookie, struct pn_cache *pc)
 {
 	uint32_t d0, d1, d2, d4, offset = 32, fc = 0, seq = 0, tid = 0, wcid,

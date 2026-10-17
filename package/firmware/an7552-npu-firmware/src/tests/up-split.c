@@ -1,13 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 /* Upload pipeline across the two harts, whole receive path.
  *
- * Core 0 (pn service + native_up_front), core 1 (PPE pop/consume +
+ * Core 0 (pn service + native_up_front), core 1 (PPE service +
  * native_up_back) and a host actor (radio, PPE, Linux) run as threads; a
  * seeded scheduler lets exactly one run between two shared accesses, so every
- * run is deterministic. Stores of the harts to the split queues (records and
- * control words, also the PPE return queue) go through per-hart store buffers
- * that commit in random order (biased to newest first) except across
- * barrier().
+ * run is deterministic. Stores of the harts to the record queue and its
+ * control words go through per-hart store buffers that commit in random
+ * order (biased to newest first) except across barrier().
  *
  * The radio fills buffers posted by core 1's refill and writes completion
  * descriptors (phase bits, EMI-limited space). The PPE consumes queued
@@ -15,8 +14,6 @@
  * Linux consumes its ring in order and stalls now and then.
  *
  * Checked:
- *   boot probe: shared memory -> pipeline on both cores; private memory or
- *     a silent core 0 -> single-core mode on both;
  *   every frame leaves exactly once; forwarded frames and Linux frames are
  *     each in radio order; a buffer is never reused while the pipeline, the
  *     PPE or a queued record still refers to it;
@@ -45,7 +42,6 @@ static unsigned weight[ACTORS] = { 4, 4, 3 };
 static __thread int self = HOST;
 static uint64_t rng = 0x7552a0b1c2d3ULL;
 static int stop_cores;
-static uint32_t model_cycles;
 
 static uint32_t rnd(void)
 {
@@ -149,14 +145,32 @@ static void barrier(void)
 		drain(self);
 }
 
-/* PPE return registers: fe4 count, fe0 status, fdc metadata, fe0 ack. */
+/* PPE return registers: fe4 count, fe0 status, fdc metadata; the firmware
+ * acknowledges the front entry by writing 0x80000000 to fe0, which the
+ * model notices at its next register read.
+ */
 #define FIFO 256
 static uint32_t fifo_st[FIFO], fifo_md[FIFO], fifo_r, fifo_w;
 static int presented;
 
+static void ppe_ack_poll(void)
+{
+	volatile uint32_t *fe0 = (void *)(uintptr_t)0x1fb50fe0;
+
+	if (*fe0 != 0x80000000)
+		return;
+	assert(self == CORE1 && presented && fifo_w != fifo_r);
+	fifo_r++;
+	presented = 0;
+	*fe0 = 0;
+}
+
 static uint32_t read32(uint32_t address)
 {
 	yield();
+	if (address == 0x1fb50fe4 || address == 0x1fb50fe0 ||
+	    address == 0x1fb50fdc)
+		ppe_ack_poll();
 	if (address == 0x1fb50fe4)
 		return (fifo_w - fifo_r) & 65535;
 	if (address == 0x1fb50fe0) {
@@ -172,19 +186,8 @@ static uint32_t read32(uint32_t address)
 	return *(volatile uint32_t *)(uintptr_t)address;
 }
 
-static void ppe_w32(uint32_t address, uint32_t value);
 #define SPLIT_LD(p) split_ld(p)
 #define SPLIT_ST(p, v) split_st(p, v)
-#define PPE_W32(a, v) ppe_w32(a, v)
-#define UP_CYCLE() (++model_cycles)
-#define UP_PROBE_TIMEOUT 3000U
-
-/* Boot probe against memory that is private to each hart. */
-static int probe_private;
-static uint32_t probe_mem[2][2];
-#define UP_PROBE_WORD(i)                                                     \
-	(probe_private ? &probe_mem[self][i] :                               \
-			 &up_slot(0)[(i) ? UP_ENTRIES * UP_WORDS - 1 : 0])
 
 static void check_forward(uint32_t fast, uint32_t wcid,
 			  volatile uint32_t *rec);
@@ -363,20 +366,6 @@ static void ppe_step(void)
 		hc = (hc + 1) % 64;
 		*(volatile uint32_t *)(uintptr_t)0x1fb5080c = hc;
 	}
-}
-
-static void ppe_w32(uint32_t address, uint32_t value)
-{
-	volatile uint32_t *slot;
-
-	yield();
-	assert(address == 0x1fb50fe0 && value == 0x80000000);
-	assert(presented && fifo_w != fifo_r);
-	/* Acknowledged only after the entry is stored under a published head. */
-	slot = ppe_split_slot(view(self, &ppe_split_ctrl()[PS_HEAD]) - 1);
-	assert(view(self, &slot[0]) == fifo_st[fifo_r % FIFO]);
-	fifo_r++;
-	presented = 0;
 }
 
 /* ---- Linux */
@@ -575,15 +564,11 @@ static void pn_request(uint32_t op, uint32_t enable)
 
 /* ---- the harts */
 static struct up_front front;
-static uint32_t boot_result[2];
-static int boot_only, core0_silent;
 
 static void core0_step(void)
 {
 	volatile uint32_t *ctl = station_ctl();
 
-	if (!UP_POP_CORE)
-		native_ppe_pop();
 	up_pn_service();
 	native_up_front(&front);
 	if (ctl[0]) {
@@ -598,7 +583,7 @@ static void core1_step(void)
 {
 	volatile uint32_t *ctl = station_ctl();
 
-	up_ppe_service();
+	native_ppe_service();
 	if (ctl[0]) {
 		barrier();
 		ctl[2] = 1;
@@ -614,15 +599,8 @@ static void *core_main(void *arg)
 	pthread_mutex_lock(&mu);
 	while (turn != self)
 		pthread_cond_wait(&cv, &mu);
-	if (self == CORE0 && core0_silent) {
-		while (alive[CORE1])
-			yield();
-	} else {
-		if (!boot_only)
-			ppe_split_boot(self);
-		boot_result[self] = up_boot(self);
-	}
-	while (!boot_only && !stop_cores) {
+	up_init(self);
+	while (!stop_cores) {
 		if (self == CORE0)
 			core0_step();
 		else
@@ -657,36 +635,6 @@ static void join_cores(void)
 	for (int c = 0; c < 2; c++)
 		pthread_join(threads[c], NULL);
 	pthread_mutex_lock(&mu);
-}
-
-/* Linux boot: shared words cleared, cores released. */
-static void boot(int private_mem, int silent)
-{
-	memset((void *)(uintptr_t)AN7552_NPU_BASE, 0, 0x800);
-	probe_private = private_mem;
-	core0_silent = silent;
-	boot_only = 1;
-	start_cores();
-	join_cores();
-	boot_only = 0;
-	core0_silent = 0;
-}
-
-static void test_probe(void)
-{
-	/* Stale probe words from an earlier run must not matter. */
-	up_slot(0)[0] = 0x0f0fa5a5;
-	boot(0, 0);
-	assert(boot_result[0] == 1 && boot_result[1] == 1);
-	assert(mem(US_MODE) == UP_MODE_SPLIT && mem(US_MAGIC) == UP_MAGIC);
-	boot(1, 0);
-	assert(!boot_result[0] && !boot_result[1]);
-	assert(mem(US_MODE) == UP_MODE_SINGLE);
-	boot(0, 1);
-	assert(!boot_result[1] && mem(US_MODE) == UP_MODE_SINGLE);
-	/* A core 0 that boots late follows core 1's verdict. */
-	assert(!up_boot(0));
-	printf("probe: shared -> pipeline, private -> single core, silent core 0 -> single core\n");
 }
 
 /* Everything handed out: radio idle, Linux and PPE drained, queue empty. */
@@ -887,12 +835,11 @@ int main(void)
 	map(0x1ec0d000, 4096);
 	map(0x1fb50000, 4096);
 	(void)native_pn_service;
-	(void)native_rro_receive;
 	pthread_mutex_lock(&mu);
 
-	test_probe();
-
-	/* Pipeline boot, then Linux brings up station, key, RRO, PPE. */
+	/* Linux boot: shared words cleared, station, key, RRO, PPE set up,
+	 * then the cores are released.
+	 */
 	memset((void *)(uintptr_t)AN7552_NPU_BASE, 0, 0x800);
 	station()[1] = 0;
 	station()[2] = cur_mac_low;
@@ -902,9 +849,8 @@ int main(void)
 	pn_entry(WCID)[1] = 9;
 	rro_setup();
 	start_cores();
-	while (mem(US_MODE) != UP_MODE_SPLIT)
+	while (mem(US_MAGIC) != UP_MAGIC)
 		yield();
-	assert(mem(US_MODE) == UP_MODE_SPLIT);
 
 	test_traffic();
 	test_key_change();
@@ -913,8 +859,7 @@ int main(void)
 
 	join_cores();
 	pthread_mutex_unlock(&mu);
-	assert(boot_result[0] == 1 && boot_result[1] == 1);
-	printf("PASS: upload pipeline across two harts: probe, exactly-once in-order delivery, queue-full back-pressure, key and station changes with a full queue, RRO stop/restart, buffer conservation (%u frames, %u forward checks)\n",
+	printf("PASS: upload pipeline across two harts: exactly-once in-order delivery, queue-full back-pressure, key and station changes with a full queue, RRO stop/restart, buffer conservation (%u frames, %u forward checks)\n",
 	       generated, forward_checks);
 	return 0;
 }

@@ -96,8 +96,6 @@ static uint32_t read32(uint32_t address)
 #include "../rx-parse.h"
 /* Tests inspect the DDR state words directly. */
 #define RX_STATE_MIRROR 0
-/* Every refill reads the ring; tests/rx-refill.c covers the gate. */
-#define RX_REFILL_MIN 0U
 #define RX_HEADER_ALIAS(host) ((volatile uint8_t *)rx_words(host))
 #include "../rro.c.inc"
 #include "../ppe.c.inc"
@@ -108,7 +106,6 @@ static uint32_t read32(uint32_t address)
 			*(volatile uint32_t *)(uintptr_t)(AN7552_STATION_NPU + \
 							  64) = 0;            \
 	} while (0)
-#define UP_CYCLE() 0U
 #include "../upsplit.c.inc"
 
 static const struct {
@@ -204,8 +201,8 @@ static void reset(void)
 	pn_entry(2)[0] = 1;
 	pn_entry(2)[1] = 9;
 	*rx_words(AN7552_STATION_HOST + 64) = 1;
-	ppe_split_boot(0);
-	ppe_split_boot(1);
+	up_init(0);
+	up_init(1);
 	/* Core 1's first call: RRO active, core 0 enabled. */
 	back_call();
 	assert(control()[5] == 1 && up_ctrl()[US_ENABLE] == 1);
@@ -246,7 +243,7 @@ static void step(void)
 	cur_core = 0;
 	up_pn_service();
 	front_call();
-	up_ppe_service();
+	native_ppe_service();
 	back_call();
 }
 
@@ -315,7 +312,7 @@ static void test_ordering(int delayed, int host_full)
 		data_control()[5] = AN7552_RX_RING_COUNT - 2;
 		step();
 	}
-	up_ppe_service();
+	native_ppe_service();
 	assert_ordered_delivery();
 }
 
@@ -336,7 +333,7 @@ static void test_security_accounting(int ppe_full)
 	data_control()[5] = AN7552_RX_RING_COUNT - 2;
 	step();
 	ppe_ready = 1;
-	up_ppe_service();
+	native_ppe_service();
 	assert(control()[7] == 1 && control()[2] == 1);
 	assert(control()[23] == 1 && !control()[24] && !control()[6]);
 	assert((rx_words(0x842f9000)[0] & 15) == 1);
@@ -355,7 +352,7 @@ static void test_continuation(void)
 	ring[1] = 160U << 16;			/* first buffer, more follows */
 	rx_words(AN7552_RX_BUFFER_HOST + 2048)[12] = 0x7fffffff;
 	step();
-	up_ppe_service();
+	native_ppe_service();
 	assert(control()[7] == 2 && !control()[6]);
 	assert(!ppe_control()[1]);
 	assert(control()[2] == 2);
@@ -448,7 +445,7 @@ static void test_key_change(void)
 	assert(pq[8] == pq[0] && pq[7] == 1 && up_ctrl()[US_EPOCH] == 1);
 	assert(pn_entry(2)[1] == 10 && pn_entry(2)[0] == 1);
 	back_call();
-	up_ppe_service();
+	native_ppe_service();
 	assert(control()[7] == 2 && !control()[6] && !queued());
 	assert(!ppe_control()[1] && control()[2] == 2);
 	assert(up_ctrl()[US_STALE] == 2);
@@ -549,8 +546,6 @@ int main(void)
 			    -1, 0) == address);
 	}
 	(void)native_pn_service;
-	(void)native_rro_receive;
-	(void)up_boot;
 	test_revocation();
 	test_ordering(0, 0);
 	test_ordering(1, 0);

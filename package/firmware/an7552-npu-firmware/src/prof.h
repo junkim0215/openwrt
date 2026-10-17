@@ -1,32 +1,24 @@
 /* SPDX-License-Identifier: MIT */
-/* Optional cycle profile (make PROF=1). Core 0 publishes at NPU_BASE+0x280,
- * core 1 at NPU_BASE+0x2c0, 16 words each, visible in debugfs status lines
- * 280: and 2c0:. Linux never touches 0x280-0x2ff after the boot memset.
+/* Optional cycle profile (make PROF=1, off by default). Core 0 publishes at
+ * NPU_BASE+0x280, core 1 at NPU_BASE+0x2c0, 16 words each, visible in the
+ * debugfs status rows 280: and 2c0:. Linux never touches 0x280-0x2ff after
+ * the boot memset.
  *
  *   [0] all loop cycles >> 8
- *   [1]..[4] cycles >> 8 of the profiled sections (see firmware_main;
- *            core 0 [3] is native_ppe_pop, core 1 [2] native_ppe_service)
+ *   [1]..[4] cycles >> 8 of the profiled sections, see firmware_main
+ *       (core 0: txfree, transmit, download;
+ *        core 1: -, ppe_service, up_back)
  *   [5] loop iterations (raw count)
  *   [6] busy iterations (raw count): the activity marker changed
  *   [7] cycles >> 8 of busy iterations
  *   [8] activity counter snapshot taken with the same publish
  *       (core 0: forward[10], core 1: RRO q[7])
+ *   [9], [10] cycles >> 8 of sections 5 and 6
+ *       (core 0: up_front, pn service)
  *   [15] PROF_MAGIC
  *
- * Upload pipeline (upsplit.c.inc). Core 1 [3] is the back half
- * (native_up_back) and [2] includes the PPE return pop (UP_POP_CORE=1),
- * [1] stays 0 because the PN service moved to core 0. Core 0 [3] (pop)
- * is then 0. Core 0 publishes its upload work in row 4c0 (NPU_BASE+0x4c0,
- * free otherwise, written only by profile images):
- *   4c0 [0] cycles >> 8 of native_up_front (front half, all of it)
- *   4c0 [1] cycles >> 8 of the PN service on core 0
- *   4c0 [2..6] SUBPROF only, cycles >> 8 of the front sub-sections:
- *       RX descriptor read, security view, parse + classify,
- *       record write + head publish, batch setup/flush/EMI
- *   4c0 [7] US_HEAD snapshot (records produced) taken with the publish
- *   4c0 [15] PROF_UP_MAGIC
- * The core 0 activity marker also counts US_HEAD, so front-half iterations
- * count as busy.
+ * The core 0 activity marker also counts the upload records it produced
+ * (US_HEAD), so front-half iterations count as busy.
  *
  * Sums are kept in 64-bit locals and published every 256 iterations, so the
  * 32-bit words wrap after 2^40 cycles (~23 min at 800 MHz); use modular
@@ -36,52 +28,14 @@
 #define AN7552_PROF_H
 
 #ifdef NPU_PROF
-#include "prof-sub.h"
-#ifdef NPU_SUBPROF
-/* Sub-section image: 280 [9..14] and 2c0 [4], [9..14] are filled too. */
-#define PROF_MAGIC 0x9f0f0003U
-#else
 #define PROF_MAGIC 0x9f0f0002U
-#endif
 #define PROF_BASE 0x280U
-#define PROF_UP_BASE 0x4c0U
-#define PROF_UP_MAGIC 0x9f0f0a01U
+#define PROF_SLOTS 8U
 
 struct prof {
-	uint64_t sum[8];
+	uint64_t sum[PROF_SLOTS];
 	uint32_t last, iterations, busy, marker;
-#ifdef NPU_SUBPROF
-	uint64_t sub[8];
-	uint32_t sub_last[8];
-	/* core 0: samples, sum radio ring fill, sum TDMA backlog, sum in-flight */
-	uint32_t diag[4];
-#endif
 };
-
-#ifdef NPU_SUBPROF
-/* Core 0, once per publish (~1.4k/s): where does the band 1 download queue
- * sit? Radio ring fill = native producer - radio DMA index (one PCIe read);
- * TDMA backlog = TDMA DMA index - published consumer; in-flight = frames
- * handed to the radio and not yet freed. Read-only.
- */
-static void prof_sample_download(struct prof *p)
-{
-	uint32_t producer, radio, dma, consumer;
-
-	if (!(read32(AN7552_NPU_BASE + AN7552_FORWARD_CONTROL + 14 * 4) & 2))
-		return;
-	producer = read32(AN7552_NPU_BASE + AN7552_NATIVE_CONTROL + 64 + 4 * 4);
-	radio = read32(0x200d8450 + 12);
-	dma = read32(0x1fb50910 + 12);
-	consumer = read32(AN7552_NPU_BASE + AN7552_TDMA_CONTROL + 8);
-	if (radio >= AN7552_NATIVE_RING_COUNT)
-		return;
-	p->diag[0]++;
-	p->diag[1] += (producer - radio) & (AN7552_NATIVE_RING_COUNT - 1);
-	p->diag[2] += (dma - consumer) & (AN7552_TDMA_COUNT - 1);
-	p->diag[3] += tx_pool()->inflight[1];
-}
-#endif
 
 static inline uint32_t prof_cycle(void)
 {
@@ -108,25 +62,12 @@ static uint32_t prof_marker(uint32_t core)
 
 static void prof_init(struct prof *p, uint32_t core)
 {
-	for (uint32_t i = 0; i < 8; i++)
+	for (uint32_t i = 0; i < PROF_SLOTS; i++)
 		p->sum[i] = 0;
 	p->iterations = 0;
 	p->busy = 0;
 	p->marker = prof_marker(core);
-#ifdef NPU_SUBPROF
-	for (uint32_t i = 0; i < 8; i++) {
-		p->sub[i] = 0;
-		p->sub_last[i] = 0;
-		psub_words()[core ? i : 8 + i] = 0;
-	}
-	for (uint32_t i = 0; i < 4; i++)
-		p->diag[i] = 0;
-#endif
 	prof_slots(core)[15] = PROF_MAGIC;
-	if (!core)
-		((volatile uint32_t *)(uintptr_t)(AN7552_NPU_BASE +
-						  PROF_UP_BASE))[15] =
-			PROF_UP_MAGIC;
 	p->last = prof_cycle();
 }
 
@@ -155,44 +96,8 @@ static void prof_tick(struct prof *p, uint32_t core)
 	out[7] = (uint32_t)(p->sum[7] >> 8);
 	out[8] = core ? marker :
 			read32(AN7552_NPU_BASE + AN7552_FORWARD_CONTROL + 10 * 4);
-#ifdef NPU_SUBPROF
-	if (core) {
-		for (uint32_t i = 0; i < 7; i++) {
-			uint32_t v = psub_words()[i];
-
-			p->sub[i] += v - p->sub_last[i];
-			p->sub_last[i] = v;
-		}
-		out[4] = (uint32_t)(p->sub[0] >> 8);
-		for (uint32_t i = 1; i < 7; i++)
-			out[8 + i] = (uint32_t)(p->sub[i] >> 8);
-	} else {
-		volatile uint32_t *up = (void *)(uintptr_t)(AN7552_NPU_BASE +
-							    PROF_UP_BASE);
-
-		prof_sample_download(p);
-		for (uint32_t i = 0; i < 4; i++)
-			out[9 + i] = p->diag[i];
-		out[13] = psub_words()[8];
-		out[14] = psub_words()[9];
-		/* Front half sub-sections: SRAM words 10..14. */
-		for (uint32_t i = 0; i < 5; i++) {
-			uint32_t v = psub_words()[10 + i];
-
-			p->sub[i] += v - p->sub_last[i];
-			p->sub_last[i] = v;
-			up[2 + i] = (uint32_t)(p->sub[i] >> 8);
-		}
-	}
-#endif
-	if (!core) {
-		volatile uint32_t *up = (void *)(uintptr_t)(AN7552_NPU_BASE +
-							    PROF_UP_BASE);
-
-		up[0] = (uint32_t)(p->sum[5] >> 8);
-		up[1] = (uint32_t)(p->sum[6] >> 8);
-		up[7] = up_ctrl()[US_HEAD];
-	}
+	out[9] = (uint32_t)(p->sum[5] >> 8);
+	out[10] = (uint32_t)(p->sum[6] >> 8);
 }
 
 #define PROF_DECLARE(p, core) struct prof p; prof_init(&p, core)

@@ -1,0 +1,195 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Date: Sat, 17 Oct 2026 16:30:00 +0300
+Subject: [PATCH] thermal/drivers: airoha: Add support for AN7563
+
+AN7563 (EN7552 in the Airoha SDK) has two temperature sensors behind the
+TADC of the chip-SCU, in the AN7583 register layout: mux at 0x2e4, data
+at 0x2f0, protect key 0x80. The TADC mux selects the sensor (7 diode,
+6 BJT). PTPSPARE0 of the PTP_THERMAL block holds the ADC code at 30 C of
+both sensors; without it the code read at probe is taken as 55 C.
+
+Neither the EN7581 nor the AN7583 conversion fits: the first reads the
+EN7581 data register (always 0 here), the second the AN7583 diodes.
+Follow the vendor SDK driver (airoha_thermal.c, "en7552-thermal_phy"):
+reset the TADC and set its mode at probe, average six samples without
+min and max, and convert with the per-sensor slope.
+
+Signed-off-by: Pavel Bragin <pabragin@yandex.ru>
+---
+--- a/drivers/thermal/airoha_thermal.c	2026-10-17 17:12:52.342065472 +0000
++++ b/drivers/thermal/airoha_thermal.c	2026-10-17 17:12:52.354979222 +0000
+@@ -195,6 +195,22 @@
+ 
+ #define AIROHA_THERMAL_NO_MUX_SENSOR		-1
+ 
++/*
++ * AN7563 (EN7552 in the vendor SDK): two sensors behind the TADC of the
++ * chip-SCU, selected with the TADC mux: 7 diode, 6 BJT. The calibration
++ * word in PTPSPARE0 holds the code at 30 C of the diode (bits 15:0) and of
++ * the BJT (bits 31:16).
++ */
++#define AN7563_MUX_TADC				0x2e4
++#define   AN7563_TADC_RST			BIT(4)
++#define   AN7563_TADC_MODE_MASK			0xf3ff
++#define   AN7563_TADC_MODE			0x33be
++#define AN7563_DOUT_TADC			0x2f0
++#define AN7563_SCU_THERMAL_PROTECT_KEY		0x80
++#define AN7563_NUM_SENSOR			2
++#define AN7563_INIT_TEMP_CPK_X10		300
++#define AN7563_INIT_TEMP_NONK_X10		550
++
+ /* Convert temp to raw value as read from ADC	((((temp / 100) - init) * slope) / 1000) + offset */
+ #define TEMP_TO_RAW(priv, temp)			((((((temp) / 100) - (priv)->init_temp) * \
+ 						  (priv)->default_slope) / 1000) + \
+@@ -266,6 +282,9 @@ struct airoha_thermal_priv {
+ 	int init_temp;
+ 	int default_slope;
+ 	int default_offset;
++
++	/* AN7563: ADC code at init_temp per sensor */
++	int sensor_offset[AN7563_NUM_SENSOR];
+ };
+ 
+ struct airoha_thermal_soc_data {
+@@ -814,7 +833,141 @@ static const struct airoha_thermal_soc_d
+ 	.probe = &an7583_thermal_probe,
+ };
+ 
++static const int an7563_thermal_mux[AN7563_NUM_SENSOR] = { 7, 6 };
++static const int an7563_thermal_slope[AN7563_NUM_SENSOR] = { 5565, 6059 };
++
++static int an7563_thermal_read_adc(struct airoha_thermal_priv *priv,
++				   int sensor, int *val)
++{
++	int min_value = INT_MAX, max_value = INT_MIN, sum = 0, value, i;
++	int mux = an7563_thermal_mux[sensor];
++
++	airoha_set_thermal_mux(priv, mux, AIROHA_THERMAL_NO_MUX_SENSOR);
++	for (i = 0; i < AIROHA_MAX_SAMPLES; i++) {
++		value = airoha_get_thermal_ADC(priv);
++		min_value = min(value, min_value);
++		max_value = max(value, max_value);
++		sum += value;
++	}
++	/* Drop min and max and average the remaining samples */
++	*val = (sum - min_value - max_value) / (AIROHA_MAX_SAMPLES - 2);
++
++	return airoha_thermal_mux_holds(priv, mux, AIROHA_THERMAL_NO_MUX_SENSOR) ?
++	       0 : -EAGAIN;
++}
++
++static int an7563_thermal_get_temp(struct thermal_zone_device *tz, int *temp)
++{
++	struct airoha_thermal_zone *zone = thermal_zone_device_priv(tz);
++	struct airoha_thermal_priv *priv = zone->priv;
++	int sensor = zone->sensor;
++	int ret, adc;
++
++	mutex_lock(&priv->lock);
++	ret = an7563_thermal_read_adc(priv, sensor, &adc);
++	mutex_unlock(&priv->lock);
++	if (ret)
++		return ret;
++
++	*temp = ((adc - priv->sensor_offset[sensor]) * 1000 /
++		 an7563_thermal_slope[sensor] + priv->init_temp) * 100;
++
++	return 0;
++}
++
++static const struct thermal_zone_device_ops an7563_tz_ops = {
++	.get_temp = an7563_thermal_get_temp,
++};
++
++static const struct reg_field an7563_chip_scu_fields[AIROHA_THERMAL_FIELD_MAX] = {
++	[AIROHA_THERMAL_DOUT_TADC] = REG_FIELD(AN7563_DOUT_TADC, 0, 15),
++	[AIROHA_THERMAL_MUX_TADC] = REG_FIELD(AN7563_MUX_TADC, 1, 3),
++};
++
++static int an7563_thermal_probe(struct platform_device *pdev,
++				struct airoha_thermal_priv *priv)
++{
++	struct device_node *chip_scu_np;
++	struct device *dev = &pdev->dev;
++	void __iomem *base;
++	u32 pllrg, efuse;
++	int i, ret;
++
++	base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	priv->map = devm_regmap_init_mmio(dev, base,
++					  &en7581_thermal_regmap_config);
++	if (IS_ERR(priv->map))
++		return PTR_ERR(priv->map);
++
++	chip_scu_np = of_parse_phandle(dev->of_node, "airoha,chip-scu", 0);
++	if (!chip_scu_np)
++		return -EINVAL;
++
++	priv->chip_scu = syscon_node_to_regmap(chip_scu_np);
++	of_node_put(chip_scu_np);
++	if (IS_ERR(priv->chip_scu))
++		return PTR_ERR(priv->chip_scu);
++
++	for (i = 0; i < AIROHA_THERMAL_FIELD_MAX; i++) {
++		struct regmap_field *field;
++
++		/* The TADC mux selects the sensor; there is no diode mux */
++		if (i == AIROHA_THERMAL_MUX_SENSOR)
++			continue;
++
++		field = devm_regmap_field_alloc(dev, priv->chip_scu,
++						an7563_chip_scu_fields[i]);
++		if (IS_ERR(field))
++			return PTR_ERR(field);
++
++		priv->chip_scu_fields[i] = field;
++	}
++
++	/* Reset the TADC and set its mode, as the vendor SDK does */
++	regmap_read(priv->chip_scu, EN7581_PLLRG_PROTECT, &pllrg);
++	regmap_write(priv->chip_scu, EN7581_PLLRG_PROTECT, priv->pllrg_protect);
++	regmap_update_bits(priv->chip_scu, AN7563_MUX_TADC, AN7563_TADC_RST, 0);
++	regmap_update_bits(priv->chip_scu, AN7563_MUX_TADC, AN7563_TADC_RST,
++			   AN7563_TADC_RST);
++	regmap_update_bits(priv->chip_scu, AN7563_MUX_TADC,
++			   AN7563_TADC_MODE_MASK, AN7563_TADC_MODE);
++	regmap_write(priv->chip_scu, EN7581_PLLRG_PROTECT, pllrg);
++
++	regmap_read(priv->map, EN7581_EFUSE_TEMP_OFFSET_REG, &efuse);
++	if (efuse) {
++		priv->sensor_offset[0] = efuse & 0xffff;
++		priv->sensor_offset[1] = efuse >> 16;
++		priv->init_temp = AN7563_INIT_TEMP_CPK_X10;
++		return 0;
++	}
++
++	for (i = 0; i < AN7563_NUM_SENSOR; i++) {
++		ret = an7563_thermal_read_adc(priv, i, &priv->sensor_offset[i]);
++		if (ret)
++			return ret;
++	}
++	priv->init_temp = AN7563_INIT_TEMP_NONK_X10;
++	dev_info(dev, "missing thermal calibration EFUSE, using non calibrated value\n");
++
++	return 0;
++}
++
++/* Zone 0 diode, zone 1 BJT */
++static const int an7563_zone_sensors[AN7563_NUM_SENSOR] = { 0, 1 };
++
++static const struct airoha_thermal_soc_data an7563_data = {
++	.sensors = an7563_zone_sensors,
++	.num_sensors = AN7563_NUM_SENSOR,
++	.pllrg_protect = AN7563_SCU_THERMAL_PROTECT_KEY,
++	.thdev_ops = &an7563_tz_ops,
++	.probe = &an7563_thermal_probe,
++};
++
+ static const struct of_device_id airoha_thermal_match[] = {
++	{ .compatible = "airoha,an7563-thermal", .data = &an7563_data },
+ 	{ .compatible = "airoha,en7581-thermal", .data = &en7581_data },
+ 	{ .compatible = "airoha,an7583-thermal", .data = &an7583_data },
+ 	{},

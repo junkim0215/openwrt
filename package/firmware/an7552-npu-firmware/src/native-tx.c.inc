@@ -1,16 +1,3 @@
-#include "prof-sub.h"
-#ifndef TX_TXWI_FILL
-/* Firmware TXP: TXD left zero for the radio to build. */
-#define TX_TXWI_FILL(txwi, token, flags, info, packet, length)               \
-	do {                                                                  \
-		for (uint32_t i_ = 0; i_ < 19; i_++)                          \
-			(txwi)[i_] = 0;                                       \
-		(txwi)[8] = ((token) << 16) | (flags);                        \
-		(txwi)[9] = (info);                                           \
-		(txwi)[10] = (packet);                                        \
-		(txwi)[16] = (length);                                        \
-	} while (0)
-#endif
 /* Native mt76 host-ring consumer. Linux retains token completion ownership. */
 static void native_transmit(uint32_t band)
 {
@@ -161,18 +148,12 @@ static void native_forward_ring(volatile uint32_t *tdma, struct tx_band *b,
 		next = (producer + 1) % AN7552_NATIVE_RING_COUNT;
 		if (next == radio) {
 			radio = read32(registers + 12);
-			if (next == radio) {
-				if (band)
-					PSUB_COUNT(8);
+			if (next == radio)
 				break;
-			}
 		}
 		if (!pool->free_tokens ||
-		    pool->inflight[band] >= TX_INFLIGHT_CAP(band)) {
-			if (band)
-				PSUB_COUNT(9);
+		    pool->inflight[band] >= TX_INFLIGHT_CAP(band))
 			break;
-		}
 		barrier();
 		length = control & 0xffff;
 		address = slot[2];
@@ -225,9 +206,14 @@ static void native_forward_ring(volatile uint32_t *tdma, struct tx_band *b,
 		pool->token_buffer[token] = TX_TOKEN_VALID |
 					    (band ? TX_TOKEN_BAND : 0) | buffer;
 		pool->inflight[band]++;
+		/* Firmware TXP: the TXD is left zero for the radio to build. */
 		txwi = (void *)(uintptr_t)(AN7552_TXWI_NPU + token * 128);
-		TX_TXWI_FILL(txwi, token, st4, meta | (wcid << 8) | (1U << 24),
-			     address, length);
+		for (uint32_t i = 0; i < 19; i++)
+			txwi[i] = 0;
+		txwi[8] = (token << 16) | st4;
+		txwi[9] = meta | (wcid << 8) | (1U << 24);
+		txwi[10] = address;
+		txwi[16] = length;
 		descriptor = (void *)(uintptr_t)(ring + producer * 16);
 		descriptor[0] = AN7552_TXWI_HOST + token * 128;
 		descriptor[2] = address;
@@ -279,7 +265,7 @@ refill:
 /* Core 0, Ethernet -> Wi-Fi for one band: TDMA ingress, direct transmit and
  * slot refill. Without forwarding the TDMA ring is re-armed in place.
  */
-static void native_download(volatile uint32_t *tdma, struct tx_band *b,
+__attribute__((noinline)) static void native_download(volatile uint32_t *tdma, struct tx_band *b,
 			    uint32_t band)
 {
 	volatile uint32_t *forward =

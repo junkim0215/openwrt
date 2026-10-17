@@ -17,7 +17,7 @@ enum rx_parse_result {
 	RX_PARSE_PROTOCOL
 };
 /* Conservative fast-path classifier. All other frames retain the Linux path. */
-static enum rx_parse_result rx_parse_view(struct pkt_view *v,
+__attribute__((noinline)) static enum rx_parse_result rx_parse_view(struct pkt_view *v,
 					  uint32_t length, uint32_t reason,
 					  struct rx_metadata *out)
 {

@@ -10,21 +10,21 @@
  * Stage 2, core 1 (native_up_back): take records in order, check the buffer
  * state, check the station identity and the live key word, then queue the
  * frame to the PPE or copy it to Linux, release buffers, refill the radio
- * receive rings and keep the PPE return queue (ppe-split.c.inc).
+ * receive rings and pop the PPE return queue (ppe.c.inc).
  *
  * Why this cut: everything that reads the packet header (security + parse)
  * stays on one core, so header words are fetched once. Everything that
  * changes buffer ownership (state bytes, free list, refill, PPE ring, Linux
- * ring) stays on core 1, as in ppe-split.c.inc. Core 0 never reads or writes
- * the buffer state bytes, so the pipeline does not depend on core 0 seeing
- * core 1's state array; core 1 checks the state of every token it is handed.
- * The station identity check moves to core 1: core 1 reads the eligibility
- * word right before it queues the frame anyway (the old "fast recheck"), and
- * its per-call identity cache never spans a station quiesce because core 1
- * skips the back half while one is in progress. Core 0 does not use the
- * station table at all.
+ * ring) stays on core 1. Core 0 never reads or writes the buffer state
+ * bytes, so the pipeline does not depend on core 0 seeing core 1's state
+ * array; core 1 checks the state of every token it is handed. The station
+ * identity check moves to core 1: core 1 reads the eligibility word right
+ * before it queues the frame anyway (the old "fast recheck"), and its
+ * per-call identity cache never spans a station quiesce because core 1 skips
+ * the back half while one is in progress. Core 0 does not use the station
+ * table at all.
  *
- * Ownership (one writer per word; "reads" lists the other readers):
+ * Ownership (one writer per word; "others" lists the other readers):
  *   state                                owner   others
  *   RRO completion ring read index,      core 0  -
  *     phase, chain (q[16], q[17], q[30]),
@@ -39,20 +39,15 @@
  *   US_TAIL, US_ENABLE, US_DROPPED, ...  core 1  core 0 (TAIL, ENABLE)
  *   RX buffer state bytes (SRAM)         core 1  -
  *   free list, q[20], q[21], q[22]       core 1  Linux at setup only
- *   radio refill rings, refill gate      core 1  -
+ *   radio refill rings                   core 1  -
  *   rx_metadata saved[1..5]              core 1  core 1 (PPE return path)
- *   PPE ring, q[1], q[10], q[12], cache  core 1  core 0 reads q[12] (pop gate)
+ *   PPE ring, q[1], q[10], q[12], cache  core 1  -
+ *   PPE return pop (fe4/fe0/fdc)         core 1  -
  *   Linux ring q[2], q[3], data[2], [7]  core 1  Linux
  *   q[5] (RRO active ack), q[6] (error), core 1  Linux, core 0 reads q[6]
  *     q[7] (frames done), q[8], q[9],
  *     q[15], q[27] (identity mismatch)
  *   station identity cache               core 1  (per call)
- *   PPE return pop (fe4/fe0/fdc, 680:    core 1  (UP_POP_CORE=1, default;
- *     PS_HEAD/ACTIVE/FULL)                       core 0 when 0)
- *
- * Single-core mode (probe failed or UP_SPLIT_ENABLE=0): exactly the old
- * ownership, core 1 runs native_rro_receive() and the PN service, core 0
- * pops PPE returns.
  *
  * Ordering: one FIFO, one producer, one consumer, so frames leave in the
  * completion ring order, as with one core (a frame that cannot be handed on
@@ -71,13 +66,13 @@
  * stops producing once q[6] != 0.
  *
  * RRO stop (Linux q[4] = 0, waits for q[5] == 0): core 1 clears US_ENABLE,
- * fences and waits until core 0 dropped US_ACTIVE (Dekker pair, as
- * ppe_split_quiet()). Only then does it drop the queued records (US_DROPPED)
- * and write q[5] = 0. Linux re-initialises every buffer state, the free list
- * and the rings in rro_setup() before the next q[4] = 1, as it did for a frame
- * parked by the single-core code. Restart: core 1 reloads the states, drops
- * anything stale and sets US_ENABLE; core 0 reads the ring index from q[16]
- * (zeroed by Linux) on its next call.
+ * fences and waits until core 0 dropped US_ACTIVE (Dekker pair). Only then
+ * does it drop the queued records (US_DROPPED) and write q[5] = 0. Linux
+ * re-initialises every buffer state, the free list and the rings in
+ * rro_setup() before the next q[4] = 1, as it did for a frame parked by the
+ * single-core code. Restart: core 1 reloads the states, drops anything stale
+ * and sets US_ENABLE; core 0 reads the ring index from q[16] (zeroed by
+ * Linux) on its next call.
  *
  * Station quiesce: core 1 runs the back half only outside the handshake and
  * checks identity against the live table. Core 0 does not touch the table.
@@ -88,50 +83,32 @@
  * they differ, core 1 compares the record's cookie with entry word 1, exactly
  * as the single-core code re-checked a parked frame.
  *
- * Shared memory: control words at NPU_BASE + 0x480 (debugfs row "480:"),
- * records in SRAM at UP_RING. Both are probed at boot (up_boot()): unless
- * core 0 and core 1 see each other's stores in the record area, the firmware
- * keeps the single-core path (core 1 native_rro_receive(), US_MODE = 2).
+ * Shared memory: control words at NPU_BASE + 0x480 (debugfs status row
+ * "480:"), records in the SRAM at UP_RING, behind the buffer states and the
+ * PPE index cache that core 1 keeps there. Both harts see that SRAM.
  */
-#ifndef UP_SPLIT_ENABLE
-#define UP_SPLIT_ENABLE 1
-#endif
 #define UP_ENTRIES 64U
 #define UP_WORDS 8U
 #define UP_RING 0x3e902800U
 #define UP_CTRL (AN7552_NPU_BASE + 0x480U)
 #define UP_MAGIC 0x75520a51U
 /* Frames core 0 takes per loop iteration: download keeps priority. */
-#ifndef UP_FRONT_BUDGET
 #define UP_FRONT_BUDGET 16U
-#endif
 /* Core 0 publishes the head every UP_PUBLISH records and at the end. */
 #define UP_PUBLISH 4U
-/* Core 1 waits this many cycles for each boot probe answer (~5 ms). */
-#ifndef UP_PROBE_TIMEOUT
-#define UP_PROBE_TIMEOUT 4000000U
-#endif
-#define UP_PROBE_FLIP 0xa5c35a3cU
 
-/* Control words. Each word has exactly one writing core. */
+/* Control words 0..7 are written by core 0 only, 8..15 by core 1 only. */
 #define US_HEAD 0	/* core 0: records published (free running) */
 #define US_ACTIVE 1	/* core 0: 1 while it owns the RRO ring index */
 #define US_FULL 2	/* core 0: calls stopped by a full queue */
 #define US_MAGIC 3	/* core 0: UP_MAGIC once booted */
 #define US_EPOCH 4	/* core 0: PN key installs and snapshots */
-#define US_PROBE_ACK 5	/* core 0: last probe nonce answered */
-#define US_PROBE_A 6	/* core 0: first probe word as core 0 read it */
-#define US_PROBE_B 7	/* core 0: last probe word as core 0 read it */
 #define US_TAIL 8	/* core 1: records consumed (free running) */
 #define US_ENABLE 9	/* core 1: core 0 may run the front half */
 #define US_DROPPED 10	/* core 1: records dropped at an RRO stop */
 #define US_PEAK 11	/* core 1: highest occupancy seen */
-#define US_MODE 12	/* core 1: 0 probing, 1 pipeline, 2 single core */
-#define US_PROBE 13	/* core 1: probe nonce */
-#define US_STALE 14	/* core 1: forward verdicts dropped by a key change */
-#define US_STOPS 15	/* core 1: completed RRO stop handshakes */
-#define UP_MODE_SPLIT 1U
-#define UP_MODE_SINGLE 2U
+#define US_STALE 12	/* core 1: forward verdicts dropped by a key change */
+#define US_STOPS 13	/* core 1: completed RRO stop handshakes */
 
 /* Record words. 1..5 line up with rx_metadata() saved[1..5] so that
  * rx_deliver_words() reads either.
@@ -155,25 +132,19 @@
 _Static_assert(UP_WORDS == 8 && (UP_ENTRIES & (UP_ENTRIES - 1)) == 0,
 	       "record queue layout");
 _Static_assert(UP_FRONT_BUDGET <= UP_ENTRIES, "front batch fits the queue");
-/* Local SRAM: buffer states, refill gate, PPE cache, sub-profile, records. */
-_Static_assert(RX_STATE_SRAM + AN7552_RX_BUFFER_COUNT + 24 <= 0x3e902000U,
+/* Local SRAM: buffer states, PPE index cache, records. */
+_Static_assert(RX_STATE_SRAM + AN7552_RX_BUFFER_COUNT + 8 <= UP_RING,
 	       "receive state area");
-_Static_assert(0x3e902000U + 16 * 4 <= UP_RING, "sub-profile words");
 _Static_assert(UP_RING + UP_ENTRIES * UP_WORDS * 4 <= 0x3e903000U,
 	       "records fit local SRAM");
-/* 0x480-0x4ff is unused by Linux (zeroed at boot only) and the firmware. */
+/* 0x480-0x4bf is unused by Linux (zeroed at boot only) and the firmware. */
 _Static_assert(UP_CTRL + 16 * 4 <= AN7552_NPU_BASE + 0x4c0U,
 	       "control row 480");
 
-#ifndef UP_CYCLE
-static inline uint32_t up_cycle(void)
-{
-	uint32_t c;
-
-	__asm__ volatile("csrr %0, mcycle" : "=r"(c) : : "memory");
-	return c;
-}
-#define UP_CYCLE() up_cycle()
+/* Host tests route the shared accesses through a weak-memory model. */
+#ifndef SPLIT_LD
+#define SPLIT_LD(p) (*(p))
+#define SPLIT_ST(p, v) (*(p) = (v))
 #endif
 
 static inline volatile uint32_t *up_ctrl(void)
@@ -187,87 +158,28 @@ static inline volatile uint32_t *up_slot(uint32_t index)
 	       (index % UP_ENTRIES) * UP_WORDS;
 }
 
-#ifndef UP_PROBE_WORD
-#define UP_PROBE_WORD(i) (&up_slot(0)[(i) ? UP_ENTRIES * UP_WORDS - 1 : 0])
-#endif
-
-/* Boot, before AN7552_MAGIC. Linux zeroed 0x000-0x7ff before releasing the
- * cores. Core 1 writes a nonce to the first and last record word, core 0
- * reports what it read and writes them back flipped; two rounds. Returns
- * nonzero when this core runs the pipeline. Both cores return the same
- * answer: core 0 waits for core 1's US_MODE.
+/* Boot, before AN7552_MAGIC: each core clears its own words. Linux zeroed
+ * 0x000-0x7ff before releasing the cores and enables the RRO only after
+ * both announced AN7552_MAGIC.
  */
-__attribute__((unused)) static uint32_t up_boot(uint32_t core)
+__attribute__((unused)) static void up_init(uint32_t core)
 {
 	volatile uint32_t *s = up_ctrl();
-	volatile uint32_t *first = UP_PROBE_WORD(0), *last = UP_PROBE_WORD(1);
-	uint32_t mode, seen = 0, ok = UP_SPLIT_ENABLE, n, prev = 0;
 
 	if (!core) {
 		s[US_HEAD] = 0;
 		s[US_ACTIVE] = 0;
 		s[US_FULL] = 0;
 		s[US_EPOCH] = 0;
-		s[US_PROBE_ACK] = 0;
-		s[US_PROBE_A] = 0;
-		s[US_PROBE_B] = 0;
 		s[US_MAGIC] = UP_MAGIC;
-		for (;;) {
-			mode = SPLIT_LD(&s[US_MODE]);
-			if (mode)
-				break;
-			n = SPLIT_LD(&s[US_PROBE]);
-			if (!n || n == seen)
-				continue;
-			barrier();
-			SPLIT_ST(&s[US_PROBE_A], SPLIT_LD(first));
-			SPLIT_ST(&s[US_PROBE_B], SPLIT_LD(last));
-			SPLIT_ST(first, SPLIT_LD(first) ^ UP_PROBE_FLIP);
-			SPLIT_ST(last, SPLIT_LD(last) ^ UP_PROBE_FLIP);
-			barrier();
-			SPLIT_ST(&s[US_PROBE_ACK], n);
-			seen = n;
-		}
-		barrier();
-		return mode == UP_MODE_SPLIT;
+		return;
 	}
 	s[US_TAIL] = 0;
 	s[US_ENABLE] = 0;
 	s[US_DROPPED] = 0;
 	s[US_PEAK] = 0;
-	s[US_PROBE] = 0;
 	s[US_STALE] = 0;
 	s[US_STOPS] = 0;
-	for (uint32_t round = 0; ok && round < 2; round++) {
-		uint32_t start;
-
-		n = ((UP_CYCLE() * 0x9e3779b1U) ^
-		     (round ? 0x3c3c0f0fU : 0x0f0fa5a5U)) | 1;
-		if (n == prev)
-			n += 2;
-		prev = n;
-		SPLIT_ST(first, n);
-		SPLIT_ST(last, ~n);
-		barrier();
-		SPLIT_ST(&s[US_PROBE], n);
-		start = UP_CYCLE();
-		while (SPLIT_LD(&s[US_PROBE_ACK]) != n)
-			if (UP_CYCLE() - start > UP_PROBE_TIMEOUT) {
-				ok = 0;
-				break;
-			}
-		if (!ok)
-			break;
-		barrier();
-		ok = SPLIT_LD(&s[US_PROBE_A]) == n &&
-		     SPLIT_LD(&s[US_PROBE_B]) == ~n &&
-		     SPLIT_LD(first) == (n ^ UP_PROBE_FLIP) &&
-		     SPLIT_LD(last) == (~n ^ UP_PROBE_FLIP);
-	}
-	barrier();
-	SPLIT_ST(&s[US_MODE], ok ? UP_MODE_SPLIT : UP_MODE_SINGLE);
-	barrier();
-	return ok;
 }
 
 /* ---------------------------------------------------------------- core 0 */
@@ -300,13 +212,10 @@ static int up_front_one(struct up_front_batch *b, volatile uint32_t *rec)
 
 	parsed.wcid = parsed.band = parsed.bss = 0;
 	parsed.offset = parsed.length = 0;
-	PSUB_START(lap);
 	descriptor = rx_words(AN7552_RX_COMPLETE_HOST + b->index * 16);
 	d3 = descriptor[3];
-	if ((d3 >> 28) != b->phase) {
-		PSUB_LAP(lap, 10);
+	if ((d3 >> 28) != b->phase)
 		return UP_EMPTY;
-	}
 	barrier();
 	d0 = descriptor[0];
 	d1 = descriptor[1];
@@ -320,10 +229,13 @@ static int up_front_one(struct up_front_batch *b, volatile uint32_t *rec)
 		SPLIT_ST(&rec[UR_D1], d1);
 		SPLIT_ST(&rec[UR_D2], d2);
 		SPLIT_ST(&rec[UR_CLASS], UR_ERROR);
-		PSUB_LAP(lap, 10);
 		return UP_ERROR_RECORD;
 	}
-	PSUB_LAP(lap, 10);
+	/* Header words are read through the cached alias without invalidating
+	 * the cache first. The free list is a FIFO of AN7552_RX_BUFFER_COUNT
+	 * (6144) tokens, so a released buffer is reused only after every other
+	 * buffer has been; by then its old lines have long been evicted.
+	 */
 	pv_init(&view, RX_HEADER_ALIAS(d0), length);
 	/* A buffer after a non-final one continues the previous MPDU. */
 	if (b->chain)
@@ -332,7 +244,6 @@ static int up_front_one(struct up_front_batch *b, volatile uint32_t *rec)
 			   0 :
 			   native_rx_security_view(&view, length, &cookie,
 						   &b->pn);
-	PSUB_LAP(lap, 11);
 	b->secure += ((security & 15) == 1);
 	if ((security & 15) == 2)
 		q[24]++;
@@ -355,7 +266,6 @@ static int up_front_one(struct up_front_batch *b, volatile uint32_t *rec)
 			   (pv_byte(&view, source + 5) << 8) |
 			   (b->epoch << 16);
 	}
-	PSUB_LAP(lap, 12);
 	SPLIT_ST(&rec[UR_D1], d1);
 	SPLIT_ST(&rec[UR_D2], d2);
 	SPLIT_ST(&rec[UR_D3], d3);
@@ -372,14 +282,13 @@ static int up_front_one(struct up_front_batch *b, volatile uint32_t *rec)
 		b->phase = (b->phase + 1) & 15;
 	}
 	b->done++;
-	PSUB_LAP(lap, 13);
 	return UP_DONE;
 }
 
 /* Core 0, once per loop iteration, at most UP_FRONT_BUDGET frames. Never
  * keeps a record unpublished across calls, so parking cannot lose one.
  */
-__attribute__((unused)) static void native_up_front(struct up_front *f)
+__attribute__((unused, noinline)) static void native_up_front(struct up_front *f)
 {
 	volatile uint32_t *q =
 		(void *)(uintptr_t)(AN7552_NPU_BASE + AN7552_RRO_CONTROL);
@@ -387,7 +296,6 @@ __attribute__((unused)) static void native_up_front(struct up_front *f)
 	volatile uint32_t *s = up_ctrl();
 	struct up_front_batch b;
 	uint32_t tail, room, head, published, result = UP_EMPTY;
-	PSUB_START(lap);
 
 	if (!SPLIT_LD(&s[US_ENABLE])) {
 		if (SPLIT_LD(&s[US_ACTIVE])) {
@@ -428,10 +336,8 @@ __attribute__((unused)) static void native_up_front(struct up_front *f)
 	b.epoch = s[US_EPOCH];
 	b.secure = 0;
 	b.done = 0;
-	PSUB_LAP(lap, 14);
 	for (uint32_t n = 0; n < room; n++) {
 		result = up_front_one(&b, up_slot(head));
-		PSUB_RESET(lap);
 		if (result == UP_EMPTY)
 			break;
 		head++;
@@ -444,7 +350,6 @@ __attribute__((unused)) static void native_up_front(struct up_front *f)
 			barrier();
 			SPLIT_ST(&s[US_HEAD], head);
 			published = head;
-			PSUB_LAP(lap, 13);
 		}
 	}
 	pc_flush(&b.pn);
@@ -464,26 +369,9 @@ __attribute__((unused)) static void native_up_front(struct up_front *f)
 		SPLIT_ST(&s[US_HEAD], head);
 	}
 	f->head = head;
-	PSUB_LAP(lap, 14);
 }
 
 /* ---------------------------------------------------------------- core 1 */
-
-/* Which core pops the PPE return registers in pipeline mode. Core 0 now
- * carries the front half, so by default core 1 pops as well as consumes
- * (the same SPSC code with one core on both sides, as the single-hart tests
- * run it). UP_POP_CORE=0 keeps the pop on core 0 as in the single-core mode.
- */
-#ifndef UP_POP_CORE
-#define UP_POP_CORE 1
-#endif
-
-__attribute__((unused)) static void up_ppe_service(void)
-{
-	if (UP_POP_CORE)
-		native_ppe_pop();
-	native_ppe_service();
-}
 
 struct up_back {
 	struct rro_batch r;	/* PPE queue state, identity cache, done */
@@ -555,14 +443,11 @@ static int up_back_one(struct up_back *u)
 	volatile uint32_t *s = up_ctrl(), *rec, *station, *entry;
 	uint32_t class, d1, d2, token, state, band, retry, fast, security = 0,
 		 mac_high;
-	PSUB_START(lap);
 
 	if (u->tail == u->head) {
 		u->head = SPLIT_LD(&s[US_HEAD]);
-		if (u->tail == u->head) {
-			PSUB_LAP(lap, 1);
+		if (u->tail == u->head)
 			return UP_EMPTY;
-		}
 		/* Records were published before the head that covers them. */
 		barrier();
 	}
@@ -573,22 +458,17 @@ static int up_back_one(struct up_back *u)
 	token = (d2 >> 16) - AN7552_RX_TOKEN_BASE;
 	if (class & UR_ERROR) {
 		up_fail(d1, d2, token);
-		PSUB_LAP(lap, 1);
 		return UP_EMPTY;
 	}
 	state = token < AN7552_RX_BUFFER_COUNT ? st_get(token) : 0;
 	if ((state & 255) != 1) {
 		up_fail(d1, d2, token);
-		PSUB_LAP(lap, 1);
 		return UP_EMPTY;
 	}
 	band = (state >> 8) & 1;
 	/* Set when an earlier attempt on this record was blocked. */
 	retry = state & 0x10000;
-	if (!retry)
-		rx_refill_note(band);
 	fast = class & UR_FAST_MASK;
-	PSUB_LAP(lap, 1);
 	if (fast) {
 		uint32_t wcid, eligible;
 
@@ -616,7 +496,6 @@ static int up_back_one(struct up_back *u)
 #ifdef UP_TEST_AFTER_IDENTITY_CHECK
 		UP_TEST_AFTER_IDENTITY_CHECK();
 #endif
-		PSUB_LAP(lap, 3);
 		if (fast) {
 			/* Key word first, then the epoch: a key install bumps
 			 * the epoch before it clears or rewrites the entry.
@@ -639,7 +518,6 @@ static int up_back_one(struct up_back *u)
 #ifdef UP_TEST_AFTER_RECHECK
 		UP_TEST_AFTER_RECHECK(fast, wcid, rec);
 #endif
-		PSUB_LAP(lap, 4);
 	}
 	if (fast) {
 		volatile uint32_t *saved = rx_metadata(token);
@@ -651,11 +529,9 @@ static int up_back_one(struct up_back *u)
 		saved[3] = SPLIT_LD(&rec[UR_D3]);
 		saved[4] = security;
 		saved[5] = SPLIT_LD(&rec[UR_COOKIE]);
-		PSUB_LAP(lap, 2);
 		if (!native_ppe_queue(&u->r, token,
 				      address + ((class >> 16) & 255), fast)) {
 			st_set(token, state | 0x10000);
-			PSUB_LAP(lap, 5);
 			return UP_BLOCKED;
 		}
 		st_set(token, 2 | (band << 8));
@@ -669,11 +545,9 @@ static int up_back_one(struct up_back *u)
 		native_ppe_flush(&u->r);
 		if (ppe[12] || !rx_deliver_words(token, band, rec, 0)) {
 			st_set(token, state | 0x10000);
-			PSUB_LAP(lap, 5);
 			return UP_BLOCKED;
 		}
 	}
-	PSUB_LAP(lap, 5);
 	u->tail++;
 	u->r.done++;
 	return UP_DONE;
@@ -698,7 +572,7 @@ static void up_back_flush(struct up_back *u)
 }
 
 /* Core 1, once per loop iteration, outside the station quiesce. */
-__attribute__((unused)) static void native_up_back(void)
+__attribute__((unused, noinline)) static void native_up_back(void)
 {
 	volatile uint32_t *q =
 		(void *)(uintptr_t)(AN7552_NPU_BASE + AN7552_RRO_CONTROL);
@@ -706,7 +580,6 @@ __attribute__((unused)) static void native_up_back(void)
 	volatile uint32_t *s = up_ctrl();
 	struct up_back u;
 	int result;
-	PSUB_START(lap);
 
 	if (!q[4]) {
 		/* Already stopped: core 0 stays idle until US_ENABLE. */
@@ -733,10 +606,8 @@ __attribute__((unused)) static void native_up_back(void)
 		return;
 	if (!SPLIT_LD(&s[US_ENABLE]) && !up_start())
 		return;
-	PSUB_RESET(lap);
 	native_rx_refill(0);
 	native_rx_refill(1);
-	PSUB_LAP(lap, 0);
 	u.r.mode = ppe[0];
 	u.r.done = 0;
 	u.r.ppe_producer = ppe[10];
@@ -749,9 +620,7 @@ __attribute__((unused)) static void native_up_back(void)
 	if (u.head - u.tail > s[US_PEAK])
 		s[US_PEAK] = u.head - u.tail;
 	for (uint32_t n = 0; n < RRO_BATCH; n++) {
-		PSUB_LAP(lap, 6);
 		result = up_back_one(&u);
-		PSUB_RESET(lap);
 		if (result == UP_DONE)
 			continue;
 		if (result == UP_EMPTY || q[6])
@@ -760,16 +629,13 @@ __attribute__((unused)) static void native_up_back(void)
 		 * retry the same record.
 		 */
 		up_back_flush(&u);
-		up_ppe_service();
+		native_ppe_service();
 		u.r.ppe_hw = read32(0x1fb5080c);
-		PSUB_LAP(lap, 6);
 		result = q[6] ? UP_EMPTY : up_back_one(&u);
-		PSUB_RESET(lap);
 		if (result != UP_DONE)
 			break;
 	}
 	up_back_flush(&u);
 	/* ppe[10] now equals u.r.ppe_producer. */
 	rro_ppe_hw_save(&u.r);
-	PSUB_LAP(lap, 6);
 }

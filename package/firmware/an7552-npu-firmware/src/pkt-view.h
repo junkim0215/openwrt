@@ -53,7 +53,7 @@ static inline uint32_t pv_byte(struct pkt_view *v, uint32_t offset)
 	return (pv_word(v, offset >> 2) >> ((offset & 3) * 8)) & 0xff;
 }
 
-static inline uint32_t pv_get32(struct pkt_view *v, uint32_t offset)
+__attribute__((noinline)) static uint32_t pv_get32(struct pkt_view *v, uint32_t offset)
 {
 	uint32_t shift = (offset & 3) * 8;
 

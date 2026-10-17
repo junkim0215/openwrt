@@ -42,7 +42,7 @@ MUTANTS = [
      "\t\tif (!eligible) {\n"),
     ("M8 retried record counted again",
      "\t\t\tif (!retry)\n\t\t\t\tq[27]++;\n",
-     "\t\t\tq[27]++;\n"),
+     "\t\t\t(void)retry;\n\t\t\tq[27]++;\n"),
     ("M9 error record treated as a frame",
      "\tif (class & UR_ERROR) {\n",
      "\tif (0 && (class & UR_ERROR)) {\n"),

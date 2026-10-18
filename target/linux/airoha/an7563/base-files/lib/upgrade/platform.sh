@@ -42,6 +42,20 @@ xiaomi_be5000_do_upgrade() {
 	return 0
 }
 
+# The NPU forwards Wi-Fi traffic by itself until the mt7996 driver stops
+# it, and sysupgrade leaves the driver loaded while it writes the image.
+# The reboot after that hung twice on the device; with the driver unloaded
+# first it has not so far. netifd and hostapd are already gone at this
+# point, so unload the driver directly.
+platform_pre_upgrade() {
+	case "$(board_name)" in
+	xiaomi,be5000)
+		rmmod mt7996e 2>/dev/null
+		;;
+	esac
+	return 0
+}
+
 platform_do_upgrade() {
 	case "$(board_name)" in
 	xiaomi,be5000)

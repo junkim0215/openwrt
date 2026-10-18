@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+# hostapd gives every 5 GHz radio a 2 ms BE TXOP (tx_queue_data2_burst=2.0),
+# and the MT7992 firmware then caps an A-MPDU at about 46 MPDUs. A 16 ms
+# TXOP lets it send full-length PPDUs back to back: about 10% more
+# download throughput to a 2x2 160 MHz client.
+
+. /lib/functions.sh
+
+[ "$(board_name)" = xiaomi,be5000 ] || exit 0
+
+[ -s /etc/config/wireless ] || /sbin/wifi config
+
+for radio in $(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-device$/\1/p"); do
+	[ "$(uci -q get wireless.$radio.band)" = 5g ] || continue
+	uci -q get wireless.$radio.hostapd_options | grep -q tx_queue_data2_burst && continue
+	uci add_list wireless.$radio.hostapd_options=tx_queue_data2_burst=16.0
+done
+uci commit wireless
+
+exit 0

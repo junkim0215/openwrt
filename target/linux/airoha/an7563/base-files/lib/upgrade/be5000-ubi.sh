@@ -9,7 +9,9 @@
 # header of every erase block first, and format the partition when it
 # holds no UBI, more than one UBI image, or more blocks without a UBI
 # header than UBI itself tolerates. Otherwise attach, and format if that
-# fails.
+# fails. Reading all blocks takes about 2.5 s, so a normal boot reads one
+# block in 16 and attaches straight away when they show a single UBI
+# image and nothing else: the stock data spans hundreds of blocks.
 
 BE5000_UBI_PART=ubi-data
 
@@ -54,6 +56,31 @@ be5000_ubi_attach() {
 	# UBI refuses to attach with this many corrupted blocks or more
 	maxjunk=$(( blocks / 20 ))
 	[ "$maxjunk" -ge 8 ] || maxjunk=8
+
+	i=0
+	while [ "$i" -lt "$blocks" ]; do
+		seq="$(be5000_ubi_peb_seq "$mtdnum" "$i" "$erasesize")"
+		case "$seq" in
+		-) ;;
+		x) other=1 ;;
+		*)
+			[ -n "$ours" ] || ours="$seq"
+			[ "$seq" = "$ours" ] || other=1
+			;;
+		esac
+		[ "$other" -eq 0 ] || break
+		i=$(( i + 16 ))
+	done
+	if [ -n "$ours" ] && [ "$other" -eq 0 ] &&
+	   ubiattach -m "$mtdnum" >/dev/null 2>&1; then
+		ubidev="$(nand_find_ubi "$BE5000_UBI_PART")"
+		[ -n "$ubidev" ] || return 1
+		be5000_ubi_log "attached as $ubidev (sampled)"
+		echo "$ubidev"
+		return 0
+	fi
+	ours=
+	other=0
 
 	i=0
 	while [ "$i" -lt "$blocks" ]; do

@@ -1,0 +1,12 @@
+. /lib/functions.sh
+
+# https-dns-proxy takes over the DNS of the LAN as soon as it starts. Ship it
+# stopped: the owner turns it on in LuCI. Only once, so that later upgrades
+# keep the choice (sysupgrade carries disabled services over by itself).
+[ "$(board_name)" = xiaomi,be5000 ] || exit 0
+[ -x /etc/init.d/https-dns-proxy ] || exit 0
+[ "$(uci -q get https-dns-proxy.config.be5000_shipped_off)" = 1 ] && exit 0
+/etc/init.d/https-dns-proxy disable
+uci set https-dns-proxy.config.be5000_shipped_off=1
+uci commit https-dns-proxy
+exit 0

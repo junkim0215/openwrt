@@ -1234,7 +1234,7 @@ index 28a9a33f..82eb9d9a 100644
  			mt7996_mcu_get_all_sta_info(phy, UNI_ALL_STA_TXRX_MSDU_COUNT);
  		}
 diff --git a/mt7996/main.c b/mt7996/main.c
-index 741cb6b4..9ad6b9cc 100644
+index 741cb6b4..b5db34ad 100644
 --- a/mt7996/main.c
 +++ b/mt7996/main.c
 @@ -189,6 +189,34 @@ mt7996_init_bitrate_mask(struct ieee80211_vif *vif, struct mt7996_vif_link *mlin
@@ -1381,7 +1381,7 @@ index 741cb6b4..9ad6b9cc 100644
 +		err = an7552_npu_station_set(dev->mt76.mmio.an7552,
 +					    msta_link->wcid.idx,
 +					    link->mt76.band_idx, link->mt76.idx,
-+					    link_sta->addr, true);
++					    link_sta->sta->addr, true);
 +	}
  
  	/* remove and add beacon in order to enable beacon protection */
@@ -1442,7 +1442,7 @@ index 741cb6b4..9ad6b9cc 100644
  				return err;
 +			err = an7552_npu_station_set(dev->mt76.mmio.an7552, msta_link->wcid.idx,
 +						     link->mt76.band_idx, link->mt76.idx,
-+						     link_sta->addr, true);
++						     link_sta->sta->addr, true);
 +			if (err)
 +				return err;
 +			msta_link->npu_authorized = true;

@@ -1,48 +1,43 @@
 # SPDX-License-Identifier: GPL-2.0-only
 
 # JFFS2 on the SPI-NAND of the Xiaomi BE5000 corrupts pages it programs
-# twice (cleanmarker in OOB, then data), so the overlay lives in a UBI
-# volume. Format the "ubi" partition if it holds no UBI yet and create
-# the rootfs_data volume before mount_root looks for it.
-ubi_rootfs_data() {
-	local mtdnum ubidir ubidev
+# twice (cleanmarker in OOB, then data), so the overlay lives in the
+# rootfs_data volume of the UBI in the "ubi-data" partition. Attach it
+# (be5000-ubi.sh) and create the volume, with its /dev node, before
+# mount_root looks for it. An initramfs may run on a factory layout: leave
+# the flash alone there.
 
+. /lib/upgrade/nand.sh
+. /lib/upgrade/be5000-ubi.sh
+
+ubi_rootfs_data() {
+	local ubidev
+
+	[ "$INITRAMFS" = "1" ] && return 0
 	case "$(board_name)" in
 	xiaomi,be5000) ;;
 	*) return 0 ;;
 	esac
 
-	mtdnum="$(find_mtd_index ubi)"
-	[ -n "$mtdnum" ] || return 0
-
-	for ubidir in /sys/class/ubi/ubi*; do
-		[ "$(cat "$ubidir/mtd_num" 2>/dev/null)" = "$mtdnum" ] && ubidev="${ubidir##*/}"
-	done
-
+	ubidev="$(be5000_ubi_attach)"
 	if [ -z "$ubidev" ]; then
-		echo "- formatting UBI on mtd$mtdnum -"
-		ubiformat "/dev/mtd$mtdnum" -y -q || return 0
-		ubiattach -m "$mtdnum" >/dev/null || return 0
-		for ubidir in /sys/class/ubi/ubi*; do
-			[ "$(cat "$ubidir/mtd_num" 2>/dev/null)" = "$mtdnum" ] && ubidev="${ubidir##*/}"
-		done
-		[ -n "$ubidev" ] || return 0
+		# mount_root then falls back to the JFFS2 rootfs_data that
+		# mtdsplit leaves behind the squashfs in "firmware"
+		be5000_ubi_log "ERROR: no UBI, the overlay falls back to JFFS2"
+		return 0
 	fi
 
-	for ubidir in /sys/class/ubi/${ubidev}_*; do
-		[ "$(cat "$ubidir/name" 2>/dev/null)" = rootfs_data ] && return 0
-	done
+	[ -n "$(nand_find_volume "$ubidev" rootfs_data)" ] && return 0
 
+	be5000_ubi_log "creating the rootfs_data volume"
 	echo "- creating rootfs_data UBI volume -"
-	ubimkvol "/dev/$ubidev" -N rootfs_data -m >/dev/null || return 0
-
-	# mount_root opens the volume by its /dev node, which hotplug creates
-	# asynchronously; without it UBIFS fails with EINVAL on the first boot.
-	for ubidir in /sys/class/ubi/${ubidev}_*; do
-		[ "$(cat "$ubidir/name" 2>/dev/null)" = rootfs_data ] || continue
-		[ -c "/dev/${ubidir##*/}" ] || \
-			mknod "/dev/${ubidir##*/}" c $(tr ":" " " < "$ubidir/dev") 2>/dev/null
-	done
+	if ! ubimkvol "/dev/$ubidev" -N rootfs_data -m >/dev/null; then
+		be5000_ubi_log "ERROR: ubimkvol failed, the overlay falls back to JFFS2"
+		return 0
+	fi
+	# mount_root opens the volume by its /dev node, which does not exist
+	# yet in preinit: nand_find_volume() creates it.
+	nand_find_volume "$ubidev" rootfs_data >/dev/null
 }
 
 boot_hook_add preinit_main ubi_rootfs_data

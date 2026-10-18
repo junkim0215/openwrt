@@ -3,6 +3,8 @@
 PART_NAME=firmware
 REQUIRE_IMAGE_METADATA=1
 
+. /lib/upgrade/be5000-ubi.sh
+
 platform_check_image() {
 	case "$(board_name)" in
 	xiaomi,be5000|airoha,an7563-evb)
@@ -16,16 +18,17 @@ platform_check_image() {
 }
 
 # The FIT stays raw in "firmware" (the bootloader reads it from there),
-# the overlay is the rootfs_data volume in the "ubi" partition.
+# the overlay is the rootfs_data volume of the UBI in "ubi-data". An
+# initramfs has not attached it: be5000_ubi_attach() does that (or formats
+# a partition that is not ours) so that the old overlay is replaced here too.
 xiaomi_be5000_do_upgrade() {
 	local ubidev
 
 	get_image "$1" | mtd write - "$PART_NAME" || return 1
 
-	ubidev="$(nand_find_ubi ubi)"
+	ubidev="$(be5000_ubi_attach)"
 	if [ -z "$ubidev" ]; then
-		# Not attached: preinit of the new image formats the partition
-		v "no UBI on the ubi partition, the overlay starts empty"
+		v "cannot attach the ubi-data partition, the overlay starts empty"
 		return 0
 	fi
 
@@ -34,7 +37,7 @@ xiaomi_be5000_do_upgrade() {
 	ubimkvol "/dev/$ubidev" -N rootfs_data -m || return 1
 
 	if [ -n "$UPGRADE_BACKUP" ]; then
-		CI_UBIPART=ubi nand_restore_config "$UPGRADE_BACKUP"
+		CI_UBIPART="$BE5000_UBI_PART" nand_restore_config "$UPGRADE_BACKUP"
 	fi
 	return 0
 }

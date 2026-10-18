@@ -22,7 +22,11 @@ define Device/xiaomi_be5000
   DEVICE_MODEL := BE5000
   DEVICE_DTS := an7563-xiaomi-be5000
   DEVICE_PACKAGES := an7552-npu-firmware kmod-phy-airoha-en8811h \
-	kmod-mt7996e kmod-mt7992-23-firmware wpad-mbedtls iw nand-utils
+	kmod-mt7996e kmod-mt7992-23-firmware wpad-mbedtls iw nand-utils \
+	kmod-amneziawg amneziawg-tools luci-proto-amneziawg \
+	luci-i18n-amneziawg-ru zapret luci-app-zapret \
+	https-dns-proxy luci-app-https-dns-proxy luci-i18n-https-dns-proxy-ru \
+	pbr luci-app-pbr luci-i18n-pbr-ru amnezia-xray-core
   KERNEL_LOADADDR := 0x80088000
   IMAGE_SIZE := 24576k
   IMAGE/sysupgrade.bin := append-kernel | pad-to 128k | append-rootfs | \

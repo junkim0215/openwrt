@@ -28,6 +28,12 @@
 #define AN7552_RX_TOKEN_BASE 32768U
 #define AN7552_RX_DATA_CONTROL 0x600U
 #define AN7552_RRO_CONTROL 0x500U
+/* Receive descriptor cipher modes (RXD2 bits 20:16) whose PN the radio
+ * reports in group 1 like CCMP: CCMP-128 (4), CCMP-256 (10), GCMP-128 (11)
+ * and GCMP-256 (12). Other ciphers stay on the Linux path.
+ */
+#define AN7552_RX_CIPHER_FAST ((1U << 4) | (1U << 10) | (1U << 11) | (1U << 12))
+#define AN7552_RX_CIPHER_IS_FAST(d2) ((AN7552_RX_CIPHER_FAST >> (((d2) >> 16) & 31)) & 1)
 #define AN7552_TXFREE_CONTROL 0x400U
 #define AN7552_FORWARD_CONTROL 0x300U
 #define AN7552_FORWARD_WORK_HOST 0x84280000U

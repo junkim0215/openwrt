@@ -17,7 +17,7 @@ __attribute__((noinline)) static uint32_t native_rx_security_view(struct pkt_vie
 	d1 = pv_get32(v, 4);
 	d2 = pv_get32(v, 8);
 	d4 = pv_get32(v, 16);
-	if ((d0 >> 27) != 2 || ((d2 >> 16) & 31) != 4 ||
+	if ((d0 >> 27) != 2 || !AN7552_RX_CIPHER_IS_FAST(d2) ||
 	    (d1 & ((1U << 23) | (1U << 24) | (1U << 25))) || !(d1 & (1U << 16)))
 		return 0;
 	wcid = d1 & 4095;

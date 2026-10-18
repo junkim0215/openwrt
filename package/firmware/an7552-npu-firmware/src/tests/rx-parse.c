@@ -35,6 +35,15 @@ int main(void)
 	assert(m.offset == 96 && m.length == 64 && m.wcid == 2 && m.tid == 5);
 	assert(m.pn_low == 0x87654321 && m.pn_high == 0xcdab &&
 	       m.sequence == 0x123);
+	/* CCMP-256, GCMP-128 and GCMP-256 carry their PN like CCMP-128. */
+	for (unsigned int mode = 0; mode < 32; mode++) {
+		p[10] = mode;
+		assert((rx_parse(p, 160, 0, &m) == RX_PARSE_OK) ==
+		       (mode == 4 || mode == 10 || mode == 11 || mode == 12));
+		if (mode != 4 && mode != 10 && mode != 11 && mode != 12)
+			assert(rx_parse(p, 160, 0, &m) == RX_PARSE_SECURITY);
+	}
+	p[10] = 4;
 	for (unsigned int n = 0; n < 160; n++)
 		assert(rx_parse(p, n, 0, &m) != RX_PARSE_OK);
 	assert(rx_parse(p, 160, 1, &m) == RX_PARSE_TYPE);

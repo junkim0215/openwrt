@@ -3,6 +3,7 @@
 #define AN7552_RX_PARSE_H
 #include <stdint.h>
 #include "pkt-view.h"
+#include "protocol.h"
 struct rx_metadata {
 	uint32_t wcid, band, bss, key, tid, pn_low, pn_high;
 	uint32_t offset, length, sequence;
@@ -33,7 +34,7 @@ __attribute__((noinline)) static enum rx_parse_result rx_parse_view(struct pkt_v
 	if ((d0 >> 27) != 2 || reason == 1 || reason == 2 || !(d2 & (1U << 7)))
 		return RX_PARSE_TYPE;
 	if (!(d1 & (1U << 31)) || (d1 & (15U << 23)) ||
-	    ((d2 >> 16) & 31) != 4 ||
+	    !AN7552_RX_CIPHER_IS_FAST(d2) ||
 	    (d2 & ((1U << 23) | (1U << 24) | (1U << 25))) ||
 	    (d3 & (1U << 24)) || ((d3 >> 16) & 3) != 1)
 		return RX_PARSE_SECURITY;

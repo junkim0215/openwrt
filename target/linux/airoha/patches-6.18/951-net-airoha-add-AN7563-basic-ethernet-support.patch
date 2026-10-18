@@ -22,9 +22,9 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  #include <linux/platform_device.h>
 +#include <linux/regmap.h>
  #include <linux/tcp.h>
- #include <linux/if_vlan.h>
  #include <linux/pcs/pcs.h>
-@@ -21,6 +23,8 @@
+ #include <linux/u64_stats_sync.h>
+@@ -20,6 +22,8 @@
  #include "airoha_regs.h"
  #include "airoha_eth.h"
  
@@ -33,20 +33,25 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  u32 airoha_rr(void __iomem *base, u32 offset)
  {
  	return readl(base + offset);
-@@ -181,6 +185,12 @@
- static void airoha_fe_maccr_init(struct airoha_eth *eth)
+@@ -181,6 +185,17 @@ static void airoha_fe_maccr_init(struct
  {
  	int p;
-+
+ 
 +	if (eth->soc->version == 0x7563) {
-+		for (p = 1; p <= ARRAY_SIZE(eth->ports); p++)
++		for (p = 1; p <= ARRAY_SIZE(eth->ports); p++) {
 +			airoha_fe_wr(eth, REG_GDM_FWD_CFG(p), GDM_PAD_EN_MASK);
++			airoha_fe_rmw(eth, REG_GDM_LEN_CFG(p),
++				      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
++				      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
++				      FIELD_PREP(GDM_LONG_LEN_MASK, AIROHA_MAX_RX_SIZE));
++		}
 +		return;
 +	}
- 
++
  	for (p = 1; p <= ARRAY_SIZE(eth->ports); p++) {
  		airoha_fe_set(eth, REG_GDM_FWD_CFG(p),
-@@ -566,6 +576,9 @@
+ 			      GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK |
+@@ -580,6 +595,9 @@ static int airoha_fe_init(struct airoha_
  {
  	airoha_fe_maccr_init(eth);
  
@@ -56,7 +61,20 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	/* PSE IQ reserve */
  	airoha_fe_rmw(eth, REG_PSE_IQ_REV1, PSE_IQ_RES1_P2_MASK,
  		      FIELD_PREP(PSE_IQ_RES1_P2_MASK, 0x10));
-@@ -1325,6 +1338,18 @@
+@@ -1081,7 +1099,11 @@ static int airoha_qdma_init_rx_queue(str
+ 			FIELD_PREP(RX_RING_THR_MASK, thr));
+ 	airoha_qdma_rmw(qdma, REG_RX_DMA_IDX(qid), RX_RING_DMA_IDX_MASK,
+ 			FIELD_PREP(RX_RING_DMA_IDX_MASK, q->head));
+-	if (lro_q)
++	/* With scatter-gather the AN7563 QDMA splits frames at 1 KiB and
++	 * shifts the first buffer by two bytes; its buffers fit a full
++	 * frame anyway.
++	 */
++	if (lro_q || qdma->eth->soc->version == 0x7563)
+ 		airoha_qdma_clear(qdma, REG_RX_SCATTER_CFG(qid),
+ 				  RX_RING_SG_EN_MASK);
+ 	else
+@@ -1357,6 +1379,18 @@ static int airoha_qdma_init_tx_queue(str
  	airoha_qdma_set(qdma, REG_TX_RING_BLOCKING(qid),
  			TX_RING_IRQ_BLOCKING_TX_DROP_EN_MASK);
  
@@ -75,13 +93,13 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	airoha_qdma_wr(qdma, REG_TX_RING_BASE(qid), dma_addr);
  	airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid), TX_RING_CPU_IDX_MASK,
  			FIELD_PREP(TX_RING_CPU_IDX_MASK, 0));
-@@ -1441,7 +1466,50 @@
+@@ -1492,8 +1526,51 @@ static int airoha_qdma_init_hfwd_queues(
  	int id = qdma - &eth->qdma[0];
  	u32 status, buf_size;
  	dma_addr_t dma_addr;
 +	void *buf;
  	const char *name;
-+
+ 
 +	if (eth->soc->version == 0x7563) {
 +		num_desc = 32;
 +
@@ -123,10 +141,11 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
 +					 USEC_PER_MSEC, 30 * USEC_PER_MSEC,
 +					 true, qdma, REG_LMGR_INIT_CFG);
 +	}
- 
++
  	name = devm_kasprintf(eth->dev, GFP_KERNEL, "qdma%d-buf", id);
  	if (!name)
-@@ -1611,6 +1679,32 @@
+ 		return -ENOMEM;
+@@ -1662,6 +1739,32 @@ static int airoha_qdma_hw_init(struct ai
  					  TX_RING_IRQ_BLOCKING_CFG_MASK);
  	}
  
@@ -159,7 +178,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	airoha_qdma_wr(qdma, REG_QDMA_GLOBAL_CFG,
  		       FIELD_PREP(GLOBAL_CFG_DMA_PREFERENCE_MASK, 3) |
  		       GLOBAL_CFG_CPU_TXR_RR_MASK |
-@@ -1804,9 +1898,11 @@
+@@ -1862,9 +1965,11 @@ static int airoha_hw_init(struct platfor
  	if (err)
  		return err;
  
@@ -174,7 +193,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  
  	msleep(20);
  	err = reset_control_bulk_deassert(ARRAY_SIZE(eth->rsts), eth->rsts);
-@@ -1824,7 +1920,13 @@
+@@ -1882,7 +1987,13 @@ static int airoha_hw_init(struct platfor
  			goto error;
  	}
  
@@ -189,30 +208,29 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	if (err)
  		goto error;
  
-@@ -2125,7 +2227,8 @@
- 	struct airoha_gdm_port *port = dev->port;
- 	struct airoha_eth *eth = dev->eth;
- 	struct airoha_qdma *qdma;
--	u32 pse_port = FE_PSE_PORT_PPE1;
-+	u32 pse_port = eth->soc->version == 0x7563 ?
-+		       FE_PSE_PORT_CDM1 : FE_PSE_PORT_PPE1;
- 	int err, qdma_id;
+@@ -2193,6 +2304,8 @@ static int airoha_dev_open(struct net_de
+ 	 */
+ 	qdma = airoha_qdma_deref(dev);
+ 	qdma_id = qdma - &qdma->eth->qdma[0];
++	if (qdma->eth->soc->version == 0x7563)
++		pse_port = FE_PSE_PORT_CDM1;
  
- 	/* HW LRO is configured on the QDMA and it is shared between
-@@ -2389,6 +2492,12 @@
- {
+ 	if (qdma->users > 1 && (airoha_fe_lro_is_enabled(qdma->eth, qdma_id) ||
+ 				(netdev->features & NETIF_F_LRO))) {
+@@ -2458,6 +2571,12 @@ static int airoha_dev_init(struct net_de
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
  	struct airoha_gdm_port *port = dev->port;
-+
+ 
 +	/* AN7563 uses QDMA directly without PPE/NPU acceleration. */
 +	if (dev->eth->soc->version == 0x7563) {
 +		airoha_dev_set_qdma(dev);
 +		return airoha_set_macaddr(dev, netdev->dev_addr);
 +	}
- 
++
  	switch (port->id) {
  	case AIROHA_GDM3_IDX:
-@@ -2557,6 +2666,92 @@
+ 	case AIROHA_GDM4_IDX:
+@@ -2619,6 +2738,92 @@ static int airoha_dev_set_features(struc
  	return 0;
  }
  
@@ -305,7 +323,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
  				   struct net_device *netdev)
  {
-@@ -2574,6 +2769,12 @@
+@@ -2636,6 +2841,12 @@ static netdev_tx_t airoha_dev_xmit(struc
  
  	rcu_read_lock();
  	qdma = rcu_dereference(dev->qdma);
@@ -318,7 +336,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	qid = airoha_qdma_get_txq(qdma, skb_get_queue_mapping(skb));
  	tag = airoha_get_dsa_tag(skb, netdev);
  
-@@ -3865,6 +4066,11 @@
+@@ -3955,6 +4166,11 @@ static int airoha_alloc_gdm_device(struc
  	netdev->hw_features = AIROHA_HW_FEATURES | NETIF_F_LRO;
  	netdev->features |= AIROHA_HW_FEATURES;
  	netdev->vlan_features = AIROHA_HW_FEATURES;
@@ -330,7 +348,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	SET_NETDEV_DEV(netdev, eth->dev);
  
  	/* reserve hw queues for HTB offloading */
-@@ -4365,7 +4571,26 @@
+@@ -4465,7 +4681,26 @@ static const struct airoha_eth_soc_data
  	},
  };
  
@@ -359,7 +377,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	{ /* sentinel */ }
 --- a/drivers/net/ethernet/airoha/airoha_eth.h
 +++ b/drivers/net/ethernet/airoha/airoha_eth.h
-@@ -203,6 +203,7 @@
+@@ -212,6 +212,7 @@ struct airoha_queue {
  	spinlock_t lock;
  	struct airoha_queue_entry *entry;
  	struct airoha_qdma_desc *desc;
@@ -369,7 +387,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  
 --- a/drivers/net/ethernet/airoha/airoha_ppe.c
 +++ b/drivers/net/ethernet/airoha/airoha_ppe.c
-@@ -1677,6 +1677,9 @@
+@@ -1676,6 +1676,9 @@ void airoha_ppe_deinit(struct airoha_eth
  {
  	struct airoha_npu *npu;
  

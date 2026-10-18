@@ -41,15 +41,15 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  		return err;
  	}
  
-+	if (eth->soc->version == 0x7563 && port->id == AIROHA_GDM2_IDX) {
++	if (qdma->eth->soc->version == 0x7563 && port->id == AIROHA_GDM2_IDX) {
 +		/* Active Ethernet uses channel zero on the PON MAC. */
-+		airoha_fe_set(eth, REG_GDM_FWD_CFG(port->id),
++		airoha_fe_set(qdma->eth, REG_GDM_FWD_CFG(port->id),
 +			      GDM_PAD_EN_MASK | GDM_STRIP_CRC_MASK | GDM_DROP_CRC_ERR_MASK);
-+		airoha_fe_wr(eth, REG_GDM_TXCHN_EN(port->id), BIT(0));
-+		airoha_fe_wr(eth, REG_GDM_RXCHN_EN(port->id), BIT(0));
-+		airoha_fe_clear(eth, REG_GDM_LPBK_CFG(port->id), LPBK_EN_MASK);
-+		airoha_fe_clear(eth, REG_FE_VIP_PORT_EN, BIT(port->id));
-+		airoha_fe_clear(eth, REG_FE_IFC_PORT_EN, BIT(port->id));
++		airoha_fe_wr(qdma->eth, REG_GDM_TXCHN_EN(port->id), BIT(0));
++		airoha_fe_wr(qdma->eth, REG_GDM_RXCHN_EN(port->id), BIT(0));
++		airoha_fe_clear(qdma->eth, REG_GDM_LPBK_CFG(port->id), LPBK_EN_MASK);
++		airoha_fe_clear(qdma->eth, REG_FE_VIP_PORT_EN, BIT(port->id));
++		airoha_fe_clear(qdma->eth, REG_FE_IFC_PORT_EN, BIT(port->id));
 +	}
 +
  	phylink_start(dev->phylink);
@@ -71,7 +71,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	if (dev->eth->soc->version == 0x7563) {
 +		/* GDM2 has separate MAC registers, but shares the CPU QDMA. */
 +		if (port->id == AIROHA_GDM2_IDX)
-+			dev->flags |= AIROHA_PRIV_F_WAN;
++			set_bit(AIROHA_DEV_F_WAN, &dev->flags);
  		airoha_dev_set_qdma(dev);
  		return airoha_set_macaddr(dev, netdev->dev_addr);
  	}

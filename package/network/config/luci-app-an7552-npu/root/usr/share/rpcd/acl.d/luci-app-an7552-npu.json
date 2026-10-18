@@ -1,0 +1,11 @@
+{
+	"luci-app-an7552-npu": {
+		"description": "Grant access to the AN7552 NPU switch",
+		"read": {
+			"uci": [ "an7552-npu" ]
+		},
+		"write": {
+			"uci": [ "an7552-npu" ]
+		}
+	}
+}

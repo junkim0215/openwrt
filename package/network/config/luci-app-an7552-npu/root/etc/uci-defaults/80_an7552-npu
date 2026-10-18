@@ -1,0 +1,8 @@
+#!/bin/sh
+
+[ -s /etc/config/an7552-npu ] && exit 0
+cat > /etc/config/an7552-npu <<'X'
+config npu 'settings'
+	option enabled '1'
+X
+exit 0

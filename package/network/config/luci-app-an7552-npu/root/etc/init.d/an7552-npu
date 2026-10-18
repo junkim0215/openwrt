@@ -1,0 +1,40 @@
+#!/bin/sh /etc/rc.common
+# Load mt7996e with or without the AN7552 NPU offload as configured.
+# At boot this runs before netifd brings Wi-Fi up.
+
+START=19
+USE_PROCD=1
+
+PARAM=/sys/module/mt7996e/parameters/npu_enable
+
+npu_apply() {
+	local enabled want running
+
+	config_load an7552-npu
+	config_get_bool enabled settings enabled 1
+	[ "$enabled" = 1 ] && want=Y || want=N
+
+	# Nothing to do without the driver, or when it already matches.
+	[ -r "$PARAM" ] || return 0
+	[ "$(cat "$PARAM")" = "$want" ] && return 0
+
+	ubus -t 2 list network.wireless >/dev/null 2>&1 && running=1
+	[ -n "$running" ] && wifi down
+	sleep 1
+	rmmod mt7996e && insmod mt7996e npu_enable=$want
+	logger -t an7552-npu "mt7996e reloaded with npu_enable=$want"
+	[ -n "$running" ] && wifi up
+	return 0
+}
+
+start_service() {
+	npu_apply
+}
+
+reload_service() {
+	npu_apply
+}
+
+service_triggers() {
+	procd_add_reload_trigger an7552-npu
+}

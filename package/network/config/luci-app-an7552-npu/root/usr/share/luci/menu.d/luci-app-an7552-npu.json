@@ -1,0 +1,14 @@
+{
+	"admin/network/an7552-npu": {
+		"title": "NPU acceleration",
+		"order": 70,
+		"action": {
+			"type": "view",
+			"path": "an7552-npu"
+		},
+		"depends": {
+			"acl": [ "luci-app-an7552-npu" ],
+			"uci": { "an7552-npu": true }
+		}
+	}
+}

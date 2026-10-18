@@ -1,0 +1,32 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ru\n"
+
+msgid "NPU acceleration"
+msgstr ""
+
+msgid "Wi-Fi NPU acceleration"
+msgstr ""
+
+msgid "With the NPU on, traffic between Wi-Fi and the wired ports is forwarded in hardware at up to about 1.9 Gbit/s. Traffic that the router itself processes (VPN such as AmneziaWG or Xray, zapret, file sharing and other services on the router) then reaches the CPU at only about 150 Mbit/s."
+msgstr ""
+
+msgid "With the NPU off, all Wi-Fi traffic goes through the CPU: about 1.1 Gbit/s between Wi-Fi and the wired ports, but up to about 900 Mbit/s for traffic of the router itself."
+msgstr ""
+
+msgid "Turn the NPU off if Wi-Fi clients go through a VPN on this router. Keep it on if the router only forwards traffic. Applying a change restarts Wi-Fi for a few seconds."
+msgstr ""
+
+
+
+
+
+msgid "Use the NPU"
+msgstr ""
+
+msgid "On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi."
+msgstr ""
+
+msgid "Grant access to the AN7552 NPU switch"
+msgstr ""

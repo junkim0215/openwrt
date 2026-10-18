@@ -1,0 +1,37 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] wifi: mt76: mt7996: allow disabling the NPU offload
+
+Traffic that the host itself sends or receives over Wi-Fi (VPN, local
+services) is copied by the AN7552 NPU and tops out at ~150 Mbit/s on
+the Xiaomi BE5000, while the plain mt76 path reaches ~900 Mbit/s. Add
+npu_enable (default on) so that such setups can skip the NPU.
+
+Signed-off-by: Pavel Bragin <pabragin@yandex.ru>
+---
+diff --git a/mt7996/pci.c b/mt7996/pci.c
+index 3d0a0e2..f647f8e 100644
+--- a/mt7996/pci.c
++++ b/mt7996/pci.c
+@@ -11,6 +11,10 @@
+ #include "mac.h"
+ #include "../trace.h"
+ 
++static bool npu_enable = true;
++module_param(npu_enable, bool, 0644);
++MODULE_PARM_DESC(npu_enable, "Use the NPU for Wi-Fi offload");
++
+ static LIST_HEAD(hif_list);
+ static DEFINE_SPINLOCK(hif_lock);
+ static u32 hif_idx;
+@@ -152,8 +156,9 @@ static int mt7996_pci_probe(struct pci_dev *pdev,
+ 	if (hif2)
+ 		pci_set_master(to_pci_dev(hif2->dev));
+ 
+-	ret = mt76_npu_init(mdev, pci_resource_start(pdev, 0),
+-			    pci_domain_nr(pdev->bus) ? 3 : 2);
++	ret = npu_enable ? mt76_npu_init(mdev, pci_resource_start(pdev, 0),
++					 pci_domain_nr(pdev->bus) ? 3 : 2) :
++			   -ENODEV;
+ 	if (ret && ret != -ENODEV && ret != -EOPNOTSUPP)
+ 		goto free_device;
+ 

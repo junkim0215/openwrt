@@ -189,10 +189,13 @@
 			reg = <0xc0000 0x1800000>;
 		};
 
+		/*
+		 * Not "ubi": the kernel attaches a partition of that name by
+		 * itself. Preinit (75_ubi_rootfs_data) attaches this one.
+		 */
 		partition@18c0000 {
-			compatible = "linux,ubi";
-			label = "ubi";
-			reg = <0x18c0000 0x2800000>;
+			label = "ubi-data";
+			reg = <0x18c0000 0x5d20000>;
 		};
 	};
 };

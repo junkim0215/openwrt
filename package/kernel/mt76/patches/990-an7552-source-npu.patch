@@ -333,7 +333,7 @@ index 7694764f..81fd0550 100644
  		npu = rcu_dereference(q->dev->mmio.npu);
  		if (npu)
 diff --git a/mac80211.c b/mac80211.c
-index 41d36360..d0541029 100644
+index 41d36360..35188dce 100644
 --- a/mac80211.c
 +++ b/mac80211.c
 @@ -589,8 +589,11 @@ int mt76_register_phy(struct mt76_phy *phy, bool vht,
@@ -362,7 +362,7 @@ index 41d36360..d0541029 100644
  
  	WARN_ON(mt76_worker_setup(hw, &dev->tx_worker, NULL, "tx"));
  	set_bit(MT76_STATE_REGISTERED, &phy->state);
-@@ -1208,19 +1214,23 @@ out:
+@@ -1208,19 +1214,34 @@ out:
  }
  EXPORT_SYMBOL_GPL(mt76_get_survey);
  
@@ -385,13 +385,25 @@ index 41d36360..d0541029 100644
 -		return;
 +		return 0;
  
- 	if (key->cipher != WLAN_CIPHER_SUITE_CCMP)
+-	if (key->cipher != WLAN_CIPHER_SUITE_CCMP)
 -		return;
++	switch (key->cipher) {
++	case WLAN_CIPHER_SUITE_CCMP:
++		break;
++	case WLAN_CIPHER_SUITE_CCMP_256:
++	case WLAN_CIPHER_SUITE_GCMP:
++	case WLAN_CIPHER_SUITE_GCMP_256:
++		/* Same PN layout; the NPU checks it on its fast path. */
++		if (dev->mmio.an7552)
++			break;
 +		return 0;
++	default:
++		return 0;
++	}
  
  	wcid->rx_check_pn = true;
  
-@@ -1233,7 +1243,22 @@ void mt76_wcid_key_setup(struct mt76_dev *dev, struct mt76_wcid *wcid,
+@@ -1233,7 +1254,22 @@ void mt76_wcid_key_setup(struct mt76_dev *dev, struct mt76_wcid *wcid,
  	/* robust management frame */
  	ieee80211_get_key_rx_seq(key, -1, &seq);
  	memcpy(wcid->rx_key_pn[i], seq.ccmp.pn, sizeof(seq.ccmp.pn));
@@ -414,7 +426,7 @@ index 41d36360..d0541029 100644
  }
  EXPORT_SYMBOL(mt76_wcid_key_setup);
  
-@@ -1324,7 +1349,7 @@ mt76_rx_convert(struct mt76_dev *dev, struct sk_buff *skb,
+@@ -1324,7 +1360,7 @@ mt76_rx_convert(struct mt76_dev *dev, struct sk_buff *skb,
  }
  
  static void
@@ -423,7 +435,7 @@ index 41d36360..d0541029 100644
  {
  	struct mt76_rx_status *status = (struct mt76_rx_status *)skb->cb;
  	struct mt76_wcid *wcid = status->wcid;
-@@ -1340,6 +1365,11 @@ mt76_check_ccmp_pn(struct sk_buff *skb)
+@@ -1340,6 +1376,11 @@ mt76_check_ccmp_pn(struct sk_buff *skb)
  
  	if (!wcid || !wcid->rx_check_pn)
  		return;
@@ -435,7 +447,7 @@ index 41d36360..d0541029 100644
  
  	security_idx = status->qos_ctl & IEEE80211_QOS_CTL_TID_MASK;
  	if (status->flag & RX_FLAG_8023)
-@@ -1368,8 +1398,11 @@ mt76_check_ccmp_pn(struct sk_buff *skb)
+@@ -1368,8 +1409,11 @@ mt76_check_ccmp_pn(struct sk_buff *skb)
  
  skip_hdr_check:
  	BUILD_BUG_ON(sizeof(status->iv) != sizeof(wcid->rx_key_pn[0]));
@@ -449,7 +461,7 @@ index 41d36360..d0541029 100644
  	if (ret <= 0) {
  		status->flag |= RX_FLAG_ONLY_MONITOR;
  		return;
-@@ -1554,7 +1587,7 @@ void mt76_rx_complete(struct mt76_dev *dev, struct sk_buff_head *frames,
+@@ -1554,7 +1598,7 @@ void mt76_rx_complete(struct mt76_dev *dev, struct sk_buff_head *frames,
  	while ((skb = __skb_dequeue(frames)) != NULL) {
  		struct sk_buff *nskb = skb_shinfo(skb)->frag_list;
  
@@ -458,7 +470,7 @@ index 41d36360..d0541029 100644
  		skb_shinfo(skb)->frag_list = NULL;
  		mt76_rx_convert(dev, skb, &hw, &sta);
  		ieee80211_rx_list(hw, sta, skb, &list);
-@@ -1593,7 +1626,8 @@ void mt76_rx_poll_complete(struct mt76_dev *dev, enum mt76_rxq_id q,
+@@ -1593,7 +1637,8 @@ void mt76_rx_poll_complete(struct mt76_dev *dev, enum mt76_rxq_id q,
  	while ((skb = __skb_dequeue(&dev->rx_skb[q])) != NULL) {
  		mt76_check_sta(dev, skb);
  		if (mtk_wed_device_active(&dev->mmio.wed) ||
@@ -1222,7 +1234,7 @@ index 28a9a33f..82eb9d9a 100644
  			mt7996_mcu_get_all_sta_info(phy, UNI_ALL_STA_TXRX_MSDU_COUNT);
  		}
 diff --git a/mt7996/main.c b/mt7996/main.c
-index 741cb6b4..894bfb9e 100644
+index 741cb6b4..9ad6b9cc 100644
 --- a/mt7996/main.c
 +++ b/mt7996/main.c
 @@ -189,6 +189,34 @@ mt7996_init_bitrate_mask(struct ieee80211_vif *vif, struct mt7996_vif_link *mlin
@@ -1268,7 +1280,7 @@ index 741cb6b4..894bfb9e 100644
  	int idx = key->keyidx;
  	u8 *wcid_keyidx;
  	bool is_bigtk;
-@@ -223,6 +252,61 @@ mt7996_set_hw_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+@@ -223,6 +252,68 @@ mt7996_set_hw_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
  	} else {
  		msta_link = &link->msta_link;
  	}
@@ -1288,10 +1300,16 @@ index 741cb6b4..894bfb9e 100644
 +	    key->flags & IEEE80211_KEY_FLAG_PAIRWISE) {
 +		struct mt7996_sta *msta = (void *)sta->drv_priv;
 +
-+		if (cmd == DISABLE_KEY || key->cipher != WLAN_CIPHER_SUITE_CCMP) {
++		bool npu_cipher = key->cipher == WLAN_CIPHER_SUITE_CCMP ||
++				  key->cipher == WLAN_CIPHER_SUITE_CCMP_256 ||
++				  key->cipher == WLAN_CIPHER_SUITE_GCMP ||
++				  key->cipher == WLAN_CIPHER_SUITE_GCMP_256;
++
++		if (cmd == DISABLE_KEY || !npu_cipher ||
++		    key->keylen > sizeof(msta->npu_key[link_id]->key)) {
 +			kfree_sensitive(msta->npu_key[link_id]);
 +			msta->npu_key[link_id] = NULL;
-+		} else if (key->cipher == WLAN_CIPHER_SUITE_CCMP) {
++		} else {
 +			npu_key = msta->npu_key[link_id];
 +			if (!npu_key) {
 +				npu_key = kzalloc(sizeof(*npu_key), GFP_KERNEL);
@@ -1299,8 +1317,8 @@ index 741cb6b4..894bfb9e 100644
 +					return -ENOMEM;
 +				msta->npu_key[link_id] = npu_key;
 +			} else if (npu_key->keyidx == key->keyidx &&
-+				   !memcmp(npu_key->key, key->key,
-+					   sizeof(npu_key->key))) {
++				   npu_key->keylen == key->keylen &&
++				   !memcmp(npu_key->key, key->key, key->keylen)) {
 +				if (!npu_key->saved) {
 +					npu_key->error = an7552_npu_pn_get(
 +						dev->mt76.mmio.an7552,
@@ -1314,7 +1332,8 @@ index 741cb6b4..894bfb9e 100644
 +				npu_key->saved = false;
 +				npu_key->error = 0;
 +			}
-+			memcpy(npu_key->key, key->key, sizeof(npu_key->key));
++			memcpy(npu_key->key, key->key, key->keylen);
++			npu_key->keylen = key->keylen;
 +			npu_key->keyidx = key->keyidx;
 +		}
 +	}
@@ -1330,7 +1349,7 @@ index 741cb6b4..894bfb9e 100644
  	wcid_keyidx = &msta_link->wcid.hw_key_idx;
  
  	is_bigtk = key->keyidx == 6 || key->keyidx == 7;
-@@ -263,11 +347,35 @@ mt7996_set_hw_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+@@ -263,11 +354,35 @@ mt7996_set_hw_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
  	if (cmd != SET_KEY && !is_bigtk)
  		return 0;
  
@@ -1367,7 +1386,7 @@ index 741cb6b4..894bfb9e 100644
  
  	/* remove and add beacon in order to enable beacon protection */
  	if (cmd == SET_KEY && is_bigtk && link_conf->enable_beacon) {
-@@ -366,6 +474,8 @@ int mt7996_vif_link_add(struct mt76_phy *mphy, struct ieee80211_vif *vif,
+@@ -366,6 +481,8 @@ int mt7996_vif_link_add(struct mt76_phy *mphy, struct ieee80211_vif *vif,
  	msta_link->wcid.link_id = link_conf->link_id;
  	msta_link->wcid.link_valid = ieee80211_vif_is_mld(vif);
  	msta_link->wcid.tx_info |= MT_WCID_TX_INFO_SET;
@@ -1376,7 +1395,7 @@ index 741cb6b4..894bfb9e 100644
  	mt76_wcid_init(&msta_link->wcid, band_idx);
  
  	mt7996_mac_wtbl_update(dev, idx,
-@@ -707,7 +817,7 @@ static int mt7996_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+@@ -707,7 +824,7 @@ static int mt7996_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
  	    (key->cipher == WLAN_CIPHER_SUITE_TKIP ||
  	     key->cipher == WLAN_CIPHER_SUITE_CCMP) &&
  	    !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
@@ -1385,7 +1404,7 @@ index 741cb6b4..894bfb9e 100644
  
  	/* fall back to sw encryption for unsupported ciphers */
  	switch (key->cipher) {
-@@ -728,7 +838,7 @@ static int mt7996_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+@@ -728,7 +845,7 @@ static int mt7996_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
  	case WLAN_CIPHER_SUITE_WEP40:
  	case WLAN_CIPHER_SUITE_WEP104:
  	default:
@@ -1394,7 +1413,7 @@ index 741cb6b4..894bfb9e 100644
  	}
  
  	mutex_lock(&dev->mt76.mutex);
-@@ -1285,6 +1395,8 @@ mt7996_mac_sta_init_link(struct mt7996_dev *dev,
+@@ -1285,6 +1402,8 @@ mt7996_mac_sta_init_link(struct mt7996_dev *dev,
  	mt7996_mac_wtbl_update(dev, idx, MT_WTBL_UPDATE_ADM_COUNT_CLEAR);
  
  	rcu_assign_pointer(dev->mt76.wcid[idx], &msta_link->wcid);
@@ -1403,7 +1422,7 @@ index 741cb6b4..894bfb9e 100644
  	mt76_wcid_init(&msta_link->wcid, phy->mt76->band_idx);
  
  	return 0;
-@@ -1301,6 +1413,13 @@ void mt7996_mac_sta_remove_link(struct mt7996_dev *dev,
+@@ -1301,6 +1420,13 @@ void mt7996_mac_sta_remove_link(struct mt7996_dev *dev,
  	if (!msta_link)
  		return;
  
@@ -1417,7 +1436,7 @@ index 741cb6b4..894bfb9e 100644
  	spin_lock_bh(&dev->mt76.sta_poll_lock);
  	if (!list_empty(&msta_link->wcid.poll_list))
  		list_del_init(&msta_link->wcid.poll_list);
-@@ -1510,6 +1629,12 @@ mt7996_mac_sta_links_event(struct mt7996_dev *dev, struct ieee80211_vif *vif,
+@@ -1510,6 +1636,12 @@ mt7996_mac_sta_links_event(struct mt7996_dev *dev, struct ieee80211_vif *vif,
  						 CONN_STATE_PORT_SECURE, false);
  			if (err)
  				return err;
@@ -1430,7 +1449,7 @@ index 741cb6b4..894bfb9e 100644
  			break;
  		case MT76_STA_EVENT_DISASSOC:
  			for (i = 0; i < ARRAY_SIZE(msta_link->twt.flow); i++)
-@@ -1898,8 +2023,11 @@ mt7996_mac_sta_remove(struct mt7996_dev *dev, struct ieee80211_vif *vif,
+@@ -1898,8 +2030,11 @@ mt7996_mac_sta_remove(struct mt7996_dev *dev, struct ieee80211_vif *vif,
  	int i;
  
  	mutex_lock(&dev->mt76.mutex);
@@ -1443,7 +1462,7 @@ index 741cb6b4..894bfb9e 100644
  	mutex_unlock(&dev->mt76.mutex);
  }
  
-@@ -1953,6 +2081,25 @@ mt7996_sta_state(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+@@ -1953,6 +2088,25 @@ mt7996_sta_state(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
  	struct mt7996_dev *dev = mt7996_hw_dev(hw);
  	enum mt76_sta_event ev;
  
@@ -1469,7 +1488,7 @@ index 741cb6b4..894bfb9e 100644
  	if (old_state == IEEE80211_STA_NOTEXIST &&
  	    new_state == IEEE80211_STA_NONE)
  		return mt7996_mac_sta_add(dev, vif, sta);
-@@ -2430,7 +2577,8 @@ static void mt7996_sta_statistics(struct ieee80211_hw *hw,
+@@ -2430,7 +2584,8 @@ static void mt7996_sta_statistics(struct ieee80211_hw *hw,
  		-(s8)ewma_avg_signal_read(&msta_link->avg_ack_signal);
  	sinfo->filled |= BIT_ULL(NL80211_STA_INFO_ACK_SIGNAL_AVG);
  
@@ -1479,7 +1498,7 @@ index 741cb6b4..894bfb9e 100644
  		sinfo->tx_bytes = msta_link->wcid.stats.tx_bytes;
  		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_TX_BYTES64);
  
-@@ -2970,7 +3118,10 @@ mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
+@@ -2970,7 +3125,10 @@ mt7996_net_fill_forward_path(struct ieee80211_hw *hw,
  		wed = &dev->mt76.mmio.wed_hif2;
  
  	if (!mtk_wed_device_active(wed) &&
@@ -1587,7 +1606,7 @@ index 8b4815e5..d7cbce9b 100644
  		struct airoha_npu *npu;
  
 diff --git a/mt7996/mt7996.h b/mt7996/mt7996.h
-index 4877071d..c28545c4 100644
+index 4877071d..f3e1c487 100644
 --- a/mt7996/mt7996.h
 +++ b/mt7996/mt7996.h
 @@ -291,6 +291,8 @@ struct mt7996_sta_link {
@@ -1599,12 +1618,13 @@ index 4877071d..c28545c4 100644
  	bool connected;
  
  	struct list_head rc_list;
-@@ -311,6 +313,14 @@ struct mt7996_sta_link {
+@@ -311,6 +313,15 @@ struct mt7996_sta_link {
  	struct rcu_head rcu_head;
  };
  
 +struct mt7996_npu_key {
-+	u8 key[WLAN_KEY_LEN_CCMP];
++	u8 key[WLAN_KEY_LEN_GCMP_256];
++	u8 keylen;
 +	u8 keyidx;
 +	u8 pn[IEEE80211_NUM_TIDS + 1][6];
 +	bool saved;
@@ -1614,7 +1634,7 @@ index 4877071d..c28545c4 100644
  struct mt7996_sta_ba {
  	u16 ssn;
  	u16 buf_size;
-@@ -333,8 +343,11 @@ struct mt7996_sta {
+@@ -333,8 +344,11 @@ struct mt7996_sta {
  	struct mt7996_sta_ba ba_rx[IEEE80211_NUM_TIDS];
  
  	struct mt7996_vif *vif;
@@ -1626,7 +1646,7 @@ index 4877071d..c28545c4 100644
  struct mt7996_vif_link {
  	struct mt76_vif_link mt76; /* must be first */
  
-@@ -778,7 +791,10 @@ int mt7996_eeprom_get_target_power(struct mt7996_dev *dev,
+@@ -778,7 +792,10 @@ int mt7996_eeprom_get_target_power(struct mt7996_dev *dev,
  s8 mt7996_eeprom_get_power_delta(struct mt7996_dev *dev, int band);
  bool mt7996_eeprom_has_background_radar(struct mt7996_dev *dev);
  int mt7996_dma_init(struct mt7996_dev *dev);
@@ -1638,7 +1658,7 @@ index 4877071d..c28545c4 100644
  void mt7996_dma_prefetch(struct mt7996_dev *dev);
  void mt7996_dma_cleanup(struct mt7996_dev *dev);
  void mt7996_dma_start(struct mt7996_dev *dev, bool reset, bool wed_reset);
-@@ -1061,7 +1077,8 @@ int mt7996_mmio_wed_init(struct mt7996_dev *dev, void *pdev_ptr,
+@@ -1061,7 +1078,8 @@ int mt7996_mmio_wed_init(struct mt7996_dev *dev, void *pdev_ptr,
  u32 mt7996_wed_init_buf(void *ptr, dma_addr_t phys, int token_id);
  
  int mt7996_dma_rro_init(struct mt7996_dev *dev);

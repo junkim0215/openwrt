@@ -8,3 +8,6 @@ src-git video https://github.com/openwrt/video.git
 #src-link custom /usr/src/openwrt/custom-feed
 src-git awg https://github.com/Slava-Shchipunov/awg-openwrt.git^03b62269e2edc168504f057cffaafda11b25ed92
 src-git zapret https://github.com/remittor/zapret-openwrt.git^1b04a87558ec7965bfed0ef7fb557997872dd699
+src-git podkop https://github.com/itdoginfo/podkop.git^da8bd40983aaab4d29614d38c8d6214d0a217e3e
+src-git youtubeUnblock https://github.com/Waujito/youtubeUnblock.git^ac46b81abb03b839a524036982f4a8eb5fb2faf9
+src-git nikki https://github.com/nikkinikki-org/OpenWrt-nikki.git^31339d53b454f575082dc4e16510c96858e01921

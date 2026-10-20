@@ -1,0 +1,108 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: reality: offer ChaCha20-Poly1305 first without AES instructions
+
+A REALITY server copies the cipher suite from the target's ServerHello,
+and targets follow the client's order. Every uTLS browser fingerprint
+lists AES-GCM first, so a client or server on a CPU without AES
+instructions ends up with AES-GCM in pure Go: 23 Mbit/s per core on the
+Xiaomi BE5000 (Cortex-A53 without FP/NEON/AES), against 135 Mbit/s for
+ChaCha20-Poly1305.
+
+BoringSSL (Chrome) puts ChaCha20-Poly1305 first when the CPU has no AES
+instructions, so do the same within the TLS 1.3 and the TLS 1.2 groups
+of the fingerprint's suites. XRAY_REALITY_CHACHA=1 or 0 forces it on or
+off.
+
+diff --git a/transport/internet/reality/reality.go b/transport/internet/reality/reality.go
+index 50b2e02..b3a1310 100644
+--- a/transport/internet/reality/reality.go
++++ b/transport/internet/reality/reality.go
+@@ -14,6 +14,7 @@ import (
+ 	"fmt"
+ 	"io"
+ 	"net/http"
++	"os"
+ 	"reflect"
+ 	"regexp"
+ 	"strings"
+@@ -32,6 +33,7 @@ import (
+ 	"github.com/xtls/xray-core/transport/internet/tls"
+ 	"golang.org/x/crypto/hkdf"
+ 	"golang.org/x/net/http2"
++	"golang.org/x/sys/cpu"
+ )
+ 
+ type Conn struct {
+@@ -135,6 +137,17 @@ func UClient(c net.Conn, config *Config, ctx context.Context, dest net.Destinati
+ 		return nil, errors.New("REALITY: failed to get fingerprint").AtError()
+ 	}
+ 	uConn.UConn = utls.UClient(c, utlsConfig, *fingerprint)
++	if preferChaCha() {
++		// Without AES instructions BoringSSL (Chrome) offers ChaCha20-Poly1305 first,
++		// and REALITY takes the cipher suite from the target's ServerHello.
++		if spec, err := utls.UTLSIdToSpec(*fingerprint); err == nil {
++			spec.CipherSuites = chachaFirst(spec.CipherSuites)
++			uConn.UConn = utls.UClient(c, utlsConfig, utls.HelloCustom)
++			if err := uConn.ApplyPreset(&spec); err != nil {
++				return nil, errors.New("REALITY: failed to apply ChaCha20 preset").Base(err)
++			}
++		}
++	}
+ 	{
+ 		uConn.BuildHandshakeState()
+ 		hello := uConn.HandshakeState.Hello
+@@ -297,3 +310,54 @@ func getPathLocked(paths map[string]struct{}) string {
+ 	}
+ 	return "/"
+ }
++
++func preferChaCha() bool {
++	switch os.Getenv("XRAY_REALITY_CHACHA") {
++	case "1":
++		return true
++	case "0":
++		return false
++	}
++	return !(cpu.X86.HasAES && cpu.X86.HasPCLMULQDQ) && !cpu.ARM64.HasAES && !cpu.ARM.HasAES &&
++		!cpu.S390X.HasAES && !cpu.PPC64.IsPOWER8
++}
++
++// chachaFirst reorders the TLS 1.3 and the TLS 1.2 suites so that ChaCha20-Poly1305
++// comes first within each group; every group keeps its slots and GREASE stays in place.
++func chachaFirst(suites []uint16) []uint16 {
++	isChaCha := func(s uint16) bool {
++		return s == utls.TLS_CHACHA20_POLY1305_SHA256 ||
++			s == utls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256 ||
++			s == utls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
++	}
++	group := func(s uint16) int {
++		switch {
++		case s&0x0f0f == 0x0a0a:
++			return 0 // GREASE
++		case s>>8 == 0x13:
++			return 1
++		}
++		return 2
++	}
++	out := append([]uint16(nil), suites...)
++	for _, g := range []int{1, 2} {
++		var idx, vals []uint16
++		for i, s := range suites {
++			if group(s) == g {
++				idx = append(idx, uint16(i))
++				if isChaCha(s) {
++					vals = append(vals, s)
++				}
++			}
++		}
++		for _, s := range suites {
++			if group(s) == g && !isChaCha(s) {
++				vals = append(vals, s)
++			}
++		}
++		for k, i := range idx {
++			out[i] = vals[k]
++		}
++	}
++	return out
++}

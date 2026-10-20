@@ -1,0 +1,257 @@
+From: Paul-Louis Charrière <plcharriere@gmail.com>
+Date: Tue, 22 Sep 2026 11:28:51 +0900
+Subject: [PATCH] nl80211: resolve interfaces on multi-radio wiphys
+
+Multi-radio wiphys expose multiple hardware radios through one phy. All UCI
+wifi-device sections therefore resolve to the same phy, causing iwinfo to
+reuse an interface from the wrong radio and to report every wiphy band for
+each section.
+
+Read the UCI radio index and select existing interfaces by their
+NL80211_ATTR_VIF_RADIO_MASK. Apply the same mask to temporary scan
+interfaces.
+For multi-radio UCI sections, limit the frequency list to the configured
+band. This lets callers such as LuCI address each logical radio separately.
+
+Assisted-by: Codex:gpt-5.6-sol
+Signed-off-by: Paul-Louis Charrière <plcharriere@gmail.com>
+---
+ iwinfo_nl80211.c | 120 +++++++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 112 insertions(+), 8 deletions(-)
+
+--- a/iwinfo_nl80211.c
++++ b/iwinfo_nl80211.c
+@@ -40,6 +40,7 @@ static struct nl80211_state *nls = NULL;
+ struct nl80211_if_data {
+ 	int mode;
+ 	int radio_idx;
++	uint32_t radio_mask;
+ };
+ 
+ static void nl80211_close(void)
+@@ -434,6 +435,64 @@ out:
+ 	return idx;
+ }
+ 
++static bool nl80211_is_ifname(const char *name);
++
++static int nl80211_radio_idx_from_uci(const char *name)
++{
++	struct uci_section *s;
++	const char *opt;
++	char *end;
++	long radio;
++	int idx = -1;
++
++	if (nl80211_is_ifname(name) || nl80211_phy_idx_from_phy(name) >= 0)
++		return -1;
++
++	s = iwinfo_uci_get_radio(name, "mac80211");
++	if (!s)
++		goto out;
++
++	opt = uci_lookup_option_string(uci_ctx, s, "radio");
++	if (!opt || !*opt)
++		goto out;
++
++	radio = strtol(opt, &end, 10);
++	if (!*end && radio >= 0 && radio < 32)
++		idx = radio;
++
++out:
++	iwinfo_uci_free();
++	return idx;
++}
++
++static int nl80211_band_from_uci(const char *name)
++{
++	struct uci_section *s;
++	const char *opt;
++	int band = 0;
++
++	s = iwinfo_uci_get_radio(name, "mac80211");
++	if (!s)
++		goto out;
++
++	opt = uci_lookup_option_string(uci_ctx, s, "band");
++	if (!opt)
++		goto out;
++
++	if (!strcmp(opt, "2g"))
++		band = IWINFO_BAND_24;
++	else if (!strcmp(opt, "5g"))
++		band = IWINFO_BAND_5;
++	else if (!strcmp(opt, "6g"))
++		band = IWINFO_BAND_6;
++	else if (!strcmp(opt, "60g"))
++		band = IWINFO_BAND_60;
++
++out:
++	iwinfo_uci_free();
++	return band;
++}
++
+ static bool nl80211_is_ifname(const char *name)
+ {
+ 	struct stat st;
+@@ -811,9 +870,14 @@ nla_put_failure:
+ 	return NULL;
+ }
+ 
++static int nl80211_get_if_data(const char *ifname,
++	struct nl80211_if_data *data);
++
+ static char * nl80211_phy2ifname(const char *ifname)
+ {
+-	int ifidx = -1, cifidx, lmode = 1, clmode, phyidx;
++	int ifidx = -1, cifidx, lmode = 1, clmode, phyidx, radio_idx;
++	uint32_t radio_mask = 0;
++	struct nl80211_if_data data;
+ 	char buffer[512];
+ 	static char nif[IFNAMSIZ] = { 0 };
+ 	DIR *d;
+@@ -829,6 +893,10 @@ static char * nl80211_phy2ifname(const c
+ 	if (phyidx < 0)
+ 		return NULL;
+ 
++	radio_idx = nl80211_radio_idx_from_uci(ifname);
++	if (radio_idx >= 0)
++		radio_mask = BIT(radio_idx);
++
+ 	memset(nif, 0, sizeof(nif));
+ 
+ 	if ((d = opendir("/sys/class/net")) != NULL)
+@@ -847,6 +915,11 @@ static char * nl80211_phy2ifname(const c
+ 			if (cifidx < 0)
+ 				continue;
+ 
++			if (radio_mask &&
++			    (nl80211_get_if_data(e->d_name, &data) ||
++			     !(data.radio_mask & radio_mask)))
++				continue;
++
+ 			snprintf(buffer, sizeof(buffer),
+ 			         "/sys/class/net/%s/link_mode", e->d_name);
+ 			clmode = nl80211_readint(buffer);
+@@ -889,6 +962,8 @@ static int nl80211_get_mode_cb(struct nl
+ 	if (tb[NL80211_ATTR_VIF_RADIO_MASK]) {
+ 		uint32_t mask = nla_get_u32(tb[NL80211_ATTR_VIF_RADIO_MASK]);
+ 
++		data->radio_mask = mask;
++
+ 		for (int i = 0; mask && i < 32; i++, mask >>= 1)
+ 			if (mask & 1)
+ 				data->radio_idx = i;
+@@ -902,10 +977,11 @@ static int nl80211_get_if_data(const cha
+ {
+ 	char *res;
+ 
+-	res = nl80211_phy2ifname(ifname);
++	res = nl80211_is_ifname(ifname) ? NULL : nl80211_phy2ifname(ifname);
+ 
+ 	data->mode = IWINFO_OPMODE_UNKNOWN;
+ 	data->radio_idx = -1;
++	data->radio_mask = 0;
+ 	nl80211_request(res ? res : ifname, NL80211_CMD_GET_INTERFACE, 0,
+ 	                nl80211_get_mode_cb, data);
+ 
+@@ -1176,8 +1252,17 @@ static char * nl80211_ifadd(const char *
+ 	char path[PATH_MAX];
+ 	static char nif[IFNAMSIZ] = { 0 };
+ 	struct nl80211_msg_conveyor *req;
++	struct nl80211_if_data data;
++	uint32_t radio_mask = 0;
++	int radio_idx;
+ 	FILE *sysfs;
+ 
++	radio_idx = nl80211_radio_idx_from_uci(ifname);
++	if (radio_idx >= 0)
++		radio_mask = BIT(radio_idx);
++	else if (!nl80211_get_if_data(ifname, &data))
++		radio_mask = data.radio_mask;
++
+ 	req = nl80211_msg(ifname, NL80211_CMD_NEW_INTERFACE, 0);
+ 	if (req)
+ 	{
+@@ -1185,8 +1270,11 @@ static char * nl80211_ifadd(const char *
+ 
+ 		NLA_PUT_STRING(req->msg, NL80211_ATTR_IFNAME, nif);
+ 		NLA_PUT_U32(req->msg, NL80211_ATTR_IFTYPE, NL80211_IFTYPE_STATION);
++		if (radio_mask)
++			NLA_PUT_U32(req->msg, NL80211_ATTR_VIF_RADIO_MASK, radio_mask);
+ 
+-		nl80211_send(req, NULL, NULL);
++		if (nl80211_send(req, NULL, NULL))
++			return NULL;
+ 
+ 		snprintf(path, sizeof(path) - 1,
+ 		         "/proc/sys/net/ipv6/conf/%s/disable_ipv6", nif);
+@@ -3217,11 +3305,17 @@ static int nl80211_get_scanlist(const ch
+ 	return -1;
+ }
+ 
++struct nl80211_freqlist {
++	struct nl80211_array_buf arr;
++	int band;
++};
++
+ static int nl80211_get_freqlist_cb(struct nl_msg *msg, void *arg)
+ {
+ 	int bands_remain, freqs_remain;
+ 
+-	struct nl80211_array_buf *arr = arg;
++	struct nl80211_freqlist *list = arg;
++	struct nl80211_array_buf *arr = &list->arr;
+ 	struct iwinfo_freqlist_entry *e;
+ 
+ 	struct nlattr **attr = nl80211_parse(msg);
+@@ -3235,6 +3329,11 @@ static int nl80211_get_freqlist_cb(struc
+ 	if (attr[NL80211_ATTR_WIPHY_BANDS]) {
+ 		nla_for_each_nested(band, attr[NL80211_ATTR_WIPHY_BANDS], bands_remain)
+ 		{
++			int entry_band = nl80211_get_band(band->nla_type);
++
++			if (list->band && entry_band != list->band)
++				continue;
++
+ 			nla_parse(bands, NL80211_BAND_ATTR_MAX,
+ 				  nla_data(band), nla_len(band), NULL);
+ 
+@@ -3248,7 +3347,7 @@ static int nl80211_get_freqlist_cb(struc
+ 					    freqs[NL80211_FREQUENCY_ATTR_DISABLED])
+ 						continue;
+ 
+-					e->band = nl80211_get_band(band->nla_type);
++					e->band = entry_band;
+ 					e->mhz = nla_get_u32(freqs[NL80211_FREQUENCY_ATTR_FREQ]);
+ 					e->channel = nl80211_freq2channel(e->mhz);
+ 
+@@ -3288,20 +3387,25 @@ static int nl80211_get_freqlist_cb(struc
+ static int nl80211_get_freqlist(const char *ifname, char *buf, int *len)
+ {
+ 	struct nl80211_msg_conveyor *cv;
+-	struct nl80211_array_buf arr = { .buf = buf, .count = 0 };
++	struct nl80211_freqlist list = {
++		.arr = { .buf = buf, .count = 0 },
++	};
+ 	uint32_t features = nl80211_get_protocol_features(ifname);
+ 	int flags;
+ 
++	if (nl80211_radio_idx_from_uci(ifname) >= 0)
++		list.band = nl80211_band_from_uci(ifname);
++
+ 	flags = features & NL80211_PROTOCOL_FEATURE_SPLIT_WIPHY_DUMP ? NLM_F_DUMP : 0;
+ 	cv = nl80211_msg(ifname, NL80211_CMD_GET_WIPHY, flags);
+ 	if (!cv)
+ 		goto out;
+ 
+ 	NLA_PUT_FLAG(cv->msg, NL80211_ATTR_SPLIT_WIPHY_DUMP);
+-	if (nl80211_send(cv, nl80211_get_freqlist_cb, &arr))
++	if (nl80211_send(cv, nl80211_get_freqlist_cb, &list))
+ 		goto out;
+ 
+-	*len = arr.count * sizeof(struct iwinfo_freqlist_entry);
++	*len = list.arr.count * sizeof(struct iwinfo_freqlist_entry);
+ 	return 0;
+ 
+ nla_put_failure:

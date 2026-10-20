@@ -1,0 +1,84 @@
+From: Paul-Louis Charrière <plcharriere@gmail.com>
+Date: Wed, 23 Sep 2026 08:44:00 +0900
+Subject: [PATCH] nl80211: limit multi-radio modes to the selected band
+
+MT7990 exposes its 2.4 and 5 GHz radios through one wiphy. The existing
+multi-radio fix restricts the frequency list for each UCI wifi-device, but
+the hardware and HT mode lists still combine capabilities from both bands.
+This makes LuCI offer 80 and 160 MHz on the 2.4 GHz radio.
+
+Use the configured band when collecting mode capabilities for a multi-radio
+UCI section. When queried through an active interface, as rpcd-mod-luci
+does, use the interface's operating band if it carries a multi-radio mask.
+Leave direct phy queries and ordinary single-radio interfaces unchanged.
+
+Assisted-by: Codex:gpt-6-astra
+Signed-off-by: Paul-Louis Charrière <plcharriere@gmail.com>
+---
+ iwinfo_nl80211.c | 27 ++++++++++++++++++++++++++-
+ 1 file changed, 26 insertions(+), 1 deletion(-)
+
+--- a/iwinfo_nl80211.c
++++ b/iwinfo_nl80211.c
+@@ -3463,6 +3463,7 @@ struct nl80211_modes
+ 	uint32_t ht;
+ 
+ 	uint8_t bands;
++	uint8_t band_filter;
+ 
+ 	uint16_t nl_ht;
+ 	uint32_t nl_vht;
+@@ -3470,6 +3471,22 @@ struct nl80211_modes
+ 	uint16_t eht_phy_cap[9];
+ };
+ 
++static int nl80211_get_mode_band(const char *ifname)
++{
++	struct nl80211_if_data data;
++	int freq;
++
++	if (nl80211_radio_idx_from_uci(ifname) >= 0)
++		return nl80211_band_from_uci(ifname);
++
++	if (!nl80211_is_ifname(ifname) ||
++	    nl80211_get_if_data(ifname, &data) || !data.radio_mask ||
++	    nl80211_get_frequency(ifname, &freq))
++		return 0;
++
++	return nl80211_freq2band(freq);
++}
++
+ static void nl80211_eval_modelist(struct nl80211_modes *m)
+ {
+ 	/* Treat any nonzero capability as 11n */
+@@ -3561,7 +3578,11 @@ static int nl80211_get_modelist_cb(struc
+ 	{
+ 		nla_for_each_nested(band, attr[NL80211_ATTR_WIPHY_BANDS], bands_remain)
+ 		{
+-			m->bands |= nl80211_get_band(band->nla_type);
++			int current_band = nl80211_get_band(band->nla_type);
++
++			if (m->band_filter && current_band != m->band_filter)
++				continue;
++			m->bands |= current_band;
+ 
+ 			nla_parse(bands, NL80211_BAND_ATTR_MAX,
+ 			          nla_data(band), nla_len(band), NULL);
+@@ -3620,6 +3641,8 @@ static int nl80211_get_hwmodelist(const
+ 	uint32_t features = nl80211_get_protocol_features(ifname);
+ 	int flags;
+ 
++	m.band_filter = nl80211_get_mode_band(ifname);
++
+ 	flags = features & NL80211_PROTOCOL_FEATURE_SPLIT_WIPHY_DUMP ? NLM_F_DUMP : 0;
+ 	cv = nl80211_msg(ifname, NL80211_CMD_GET_WIPHY, flags);
+ 	if (!cv)
+@@ -3755,6 +3778,8 @@ static int nl80211_get_htmodelist(const
+ 	uint32_t features = nl80211_get_protocol_features(ifname);
+ 	int flags;
+ 
++	m.band_filter = nl80211_get_mode_band(ifname);
++
+ 	flags = features & NL80211_PROTOCOL_FEATURE_SPLIT_WIPHY_DUMP ? NLM_F_DUMP : 0;
+ 	cv = nl80211_msg(ifname, NL80211_CMD_GET_WIPHY, flags);
+ 	if (!cv)

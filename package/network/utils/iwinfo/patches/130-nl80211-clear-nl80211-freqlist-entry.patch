@@ -1,0 +1,33 @@
+From: Ruslan Isaev <legale.legale@gmail.com>
+Date: Sat, 27 Jun 2026 21:13:14 +0300
+Subject: [PATCH] nl80211: clear nl80211 freqlist entry
+
+Zero the freqlist entry before filling it in nl80211_get_freqlist_cb().
+
+Without this, long-lived processes such as rpcd can reuse dirty stack
+contents and keep random bits in the exported data. This shows up in
+ubus iwinfo freqlist replies as bogus flags such as no_10mhz and
+no_20mhz, even though they are not actually set.
+
+Clear the whole entry first so only flags reported by nl80211 are
+returned.
+
+Signed-off-by: Ruslan Isaev <legale.legale@gmail.com>
+Link: https://github.com/openwrt/iwinfo/pull/42
+Assisted-by: Claude:claude-opus-5-5
+Signed-off-by: Paul-Louis Charrière <plcharriere@gmail.com>
+---
+ iwinfo_nl80211.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/iwinfo_nl80211.c
++++ b/iwinfo_nl80211.c
+@@ -3347,6 +3347,8 @@ static int nl80211_get_freqlist_cb(struc
+ 					    freqs[NL80211_FREQUENCY_ATTR_DISABLED])
+ 						continue;
+ 
++					memset(e, 0, sizeof(*e));
++
+ 					e->band = entry_band;
+ 					e->mhz = nla_get_u32(freqs[NL80211_FREQUENCY_ATTR_FREQ]);
+ 					e->channel = nl80211_freq2channel(e->mhz);

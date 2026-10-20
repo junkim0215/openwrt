@@ -28,5 +28,14 @@ msgstr "Использовать NPU"
 msgid "On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi."
 msgstr "Включено: самая быстрая пересылка между Wi-Fi и проводными портами. Выключено: самые быстрые VPN и службы роутера по Wi-Fi."
 
+msgid "Wi-Fi latency"
+msgstr "Задержка Wi-Fi"
+
+msgid "Gaming mode"
+msgstr "Игровой режим"
+
+msgid "Lower ping while someone downloads. On: other devices keep a ping of about 8 ms during a download. Off: 16-20 ms, but peak download speed is about 10% higher."
+msgstr "Меньше пинг, пока кто-то качает. Включено: во время закачки пинг у остальных устройств около 8 мс. Выключено: 16–20 мс, зато максимальная скорость скачивания примерно на 10% выше."
+
 msgid "Grant access to the AN7552 NPU switch"
 msgstr "Доступ к переключателю NPU AN7552"

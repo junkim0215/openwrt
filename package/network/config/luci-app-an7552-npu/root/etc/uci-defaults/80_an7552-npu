@@ -1,8 +1,13 @@
 #!/bin/sh
 
-[ -s /etc/config/an7552-npu ] && exit 0
-cat > /etc/config/an7552-npu <<'X'
+[ -s /etc/config/an7552-npu ] || cat > /etc/config/an7552-npu <<'X'
 config npu 'settings'
 	option enabled '1'
 X
+
+uci -q get an7552-npu.wifi >/dev/null || {
+	uci set an7552-npu.wifi=wifi
+	uci set an7552-npu.wifi.gaming=0
+	uci commit an7552-npu
+}
 exit 0

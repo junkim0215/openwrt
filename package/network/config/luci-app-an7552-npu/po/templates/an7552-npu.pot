@@ -28,5 +28,14 @@ msgstr ""
 msgid "On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi."
 msgstr ""
 
+msgid "Wi-Fi latency"
+msgstr ""
+
+msgid "Gaming mode"
+msgstr ""
+
+msgid "Lower ping while someone downloads. On: other devices keep a ping of about 8 ms during a download. Off: 16-20 ms, but peak download speed is about 10% higher."
+msgstr ""
+
 msgid "Grant access to the AN7552 NPU switch"
 msgstr ""

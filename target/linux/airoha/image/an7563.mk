@@ -17,6 +17,9 @@ define Device/airoha_an7563-evb
 endef
 TARGET_DEVICES += airoha_an7563-evb
 
+# LuCI languages besides English, which is built in
+XIAOMI_BE5000_LUCI_LANGS := ru uk zh-cn de es fr pt-br
+
 define Device/xiaomi_be5000
   DEVICE_VENDOR := Xiaomi
   DEVICE_MODEL := BE5000
@@ -24,7 +27,8 @@ define Device/xiaomi_be5000
   DEVICE_PACKAGES := an7552-npu-firmware kmod-phy-airoha-en8811h \
 	kmod-mt7996e kmod-mt7992-23-firmware wpad-mbedtls iw nand-utils \
 	luci-app-an7552-npu luci-i18n-an7552-npu-ru \
-	luci-i18n-base-ru luci-i18n-firewall-ru luci-i18n-package-manager-ru
+	$(foreach lang,$(XIAOMI_BE5000_LUCI_LANGS),luci-i18n-base-$(lang) \
+		luci-i18n-firewall-$(lang) luci-i18n-package-manager-$(lang))
   KERNEL_LOADADDR := 0x80088000
   IMAGE_SIZE := 24576k
   IMAGE/sysupgrade.bin := append-kernel | pad-to 128k | append-rootfs | \
@@ -39,8 +43,9 @@ define Device/xiaomi_be5000-full
   DEVICE_VARIANT := (VPN)
   DEVICE_PACKAGES += kmod-amneziawg amneziawg-tools luci-proto-amneziawg \
 	luci-i18n-amneziawg-ru zapret luci-app-zapret \
-	https-dns-proxy luci-app-https-dns-proxy luci-i18n-https-dns-proxy-ru \
-	pbr luci-app-pbr luci-i18n-pbr-ru amnezia-xray-core
+	https-dns-proxy luci-app-https-dns-proxy pbr luci-app-pbr amnezia-xray-core \
+	$(foreach lang,$(XIAOMI_BE5000_LUCI_LANGS),luci-i18n-https-dns-proxy-$(lang) \
+		luci-i18n-pbr-$(lang))
   SUPPORTED_DEVICES := xiaomi,be5000
   ARTIFACTS :=
 endef

@@ -18,6 +18,13 @@ return view.extend({
 		o.default = o.enabled;
 		o.rmempty = false;
 
+		s = m.section(form.NamedSection, 'wifi', 'wifi', _('Wi-Fi latency'));
+
+		o = s.option(form.Flag, 'gaming', _('Gaming mode'),
+			_('Lower ping while someone downloads. On: other devices keep a ping of about 8 ms during a download. Off: 16-20 ms, but peak download speed is about 10% higher.'));
+		o.default = o.disabled;
+		o.rmempty = false;
+
 		return m.render();
 	}
 });

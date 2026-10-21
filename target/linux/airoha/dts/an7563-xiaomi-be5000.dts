@@ -159,13 +159,14 @@
 
 		partition@0 {
 			label = "u-boot";
-			reg = <0x0 0x7c000>;
+			reg = <0x0 0x60000>;
 			read-only;
 		};
 
-		partition@7c000 {
+		/* U-Boot reads its environment from the last 16 KiB (0x7c000) */
+		partition@60000 {
 			label = "u-boot-env";
-			reg = <0x7c000 0x4000>;
+			reg = <0x60000 0x20000>;
 		};
 
 		partition@80000 {

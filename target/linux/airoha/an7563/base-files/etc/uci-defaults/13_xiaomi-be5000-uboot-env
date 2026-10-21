@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+# Holding Reset at power-on starts the U-Boot web failsafe: the bootloader
+# reads this check from its environment at 0x7C000, the last 16 KiB of the
+# u-boot-env block. Routers installed earlier have an empty block, so write
+# the environment once. A block that holds any data is left alone.
+
+. /lib/functions.sh
+
+[ "$(board_name)" = xiaomi,be5000 ] || exit 0
+
+env=/usr/share/xiaomi-be5000/u-boot-env.bin
+idx=$(find_mtd_index u-boot-env)
+[ -n "$idx" ] && [ "$(wc -c < "$env")" -eq 16384 ] || exit 0
+[ "$(cat /sys/class/mtd/mtd$idx/size)" -eq 131072 ] || exit 0
+
+cur=/tmp/u-boot-env.cur
+new=/tmp/u-boot-env.new
+dd if=/dev/mtd$idx of=$cur bs=4096 2>/dev/null
+if [ -s $cur ] && [ "$(tr -d '\000\377' < $cur | wc -c)" -eq 0 ]; then
+	{ dd if=/dev/zero bs=4096 count=28 2>/dev/null; cat "$env"; } > $new
+	mtd -q write $new u-boot-env >/dev/null 2>&1
+	dd if=/dev/mtd$idx of=$cur bs=4096 2>/dev/null
+	if cmp -s $cur $new; then
+		logger -t u-boot-env "Reset button failsafe check written"
+	else
+		logger -t u-boot-env "writing the environment failed, U-Boot keeps its defaults"
+	fi
+fi
+rm -f $cur $new
+
+exit 0

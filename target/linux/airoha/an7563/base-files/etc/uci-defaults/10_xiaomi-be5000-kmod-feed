@@ -3,8 +3,9 @@
 # downloads.openwrt.org has no airoha/an7563 target. The kernel modules of
 # this build are published per kernel build at the URL below; point the
 # target feed there, or drop it when the kernel version is unknown. The
-# packages of the awg and zapret feeds are published there too, so drop
-# their feeds, which downloads.openwrt.org does not have either.
+# packages of the awg, zapret, nikki, podkop and youtubeUnblock feeds are
+# published there too, so drop their feeds, which downloads.openwrt.org
+# does not have either.
 
 . /lib/functions.sh
 
@@ -20,6 +21,6 @@ if [ -n "$kernel" ]; then
 else
 	sed -i "\,/targets/airoha/an7563/,d" "$feeds"
 fi
-sed -i "\,/packages/[^/]*/\(awg\|zapret\)/packages.adb\$,d" "$feeds"
+sed -i "\,/packages/[^/]*/\(awg\|zapret\|nikki\|podkop\|youtubeUnblock\)/packages.adb\$,d" "$feeds"
 
 exit 0

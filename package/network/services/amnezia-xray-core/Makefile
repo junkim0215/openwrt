@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=amnezia-xray-core
 PKG_VERSION:=26.7.28
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/amnezia-vpn/amnezia-xray-core.git
@@ -26,10 +26,11 @@ GO_PKG_LDFLAGS_X:= \
 include $(INCLUDE_DIR)/package.mk
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
 
-# x/crypto computes Poly1305 with 64-bit limbs (bits.Mul64: four multiplies
-# on 32-bit ARM). Build against a copy of the module with a 26-bit-limb
-# update for GOARCH=arm when the version matches: ChaCha20-Poly1305 gets
-# ~24% faster on the AN7563.
+# x/crypto has no 32-bit ARM code for ChaCha20-Poly1305: ChaCha20 is generic
+# Go and Poly1305 uses 64-bit limbs (bits.Mul64: four multiplies on 32-bit
+# ARM). Build against a copy of the module with ARM assembly for ChaCha20 and
+# a 26-bit-limb Poly1305 for GOARCH=arm when the version matches: the AEAD
+# gets ~65% faster on the AN7563.
 XCRYPTO_VERSION:=v0.54.0
 
 define Build/Compile
@@ -40,7 +41,7 @@ define Build/Compile
 		rm -rf third_party/x-crypto && mkdir -p third_party && \
 		cp -r $(GO_MOD_CACHE_DIR)/golang.org/x/crypto@$(XCRYPTO_VERSION) third_party/x-crypto && \
 		chmod -R u+w third_party/x-crypto && \
-		cp $(CURDIR)/xcrypto/*.go third_party/x-crypto/internal/poly1305/ && \
+		cp -r $(CURDIR)/xcrypto/. third_party/x-crypto/ && \
 		$(GO_GENERAL_BUILD_CONFIG_VARS) $(GO_PKG_BUILD_CONFIG_VARS) $(GO_PKG_VARS) \
 			go mod edit -replace golang.org/x/crypto=./third_party/x-crypto; \
 	fi

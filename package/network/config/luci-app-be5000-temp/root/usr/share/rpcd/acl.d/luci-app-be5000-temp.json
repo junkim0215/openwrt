@@ -1,0 +1,15 @@
+{
+	"luci-app-be5000-temp": {
+		"description": "Grant access to the temperature sensors",
+		"read": {
+			"file": {
+				"/sys/class/thermal/thermal_zone*/temp": [ "read" ],
+				"/sys/class/hwmon/hwmon*/name": [ "read" ],
+				"/sys/class/hwmon/hwmon*/temp1_input": [ "read" ],
+				"/sys/devices/virtual/thermal/thermal_zone*/temp": [ "read" ],
+				"/sys/devices/platform/soc/*/ieee80211/phy*/hwmon*/name": [ "read" ],
+				"/sys/devices/platform/soc/*/ieee80211/phy*/hwmon*/temp1_input": [ "read" ]
+			}
+		}
+	}
+}

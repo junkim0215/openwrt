@@ -27,6 +27,7 @@ define Device/xiaomi_be5000
   DEVICE_PACKAGES := an7552-npu-firmware kmod-phy-airoha-en8811h \
 	kmod-mt7996e kmod-mt7992-23-firmware wpad-mbedtls iw nand-utils \
 	luci-app-an7552-npu luci-i18n-an7552-npu-ru \
+	luci-app-be5000-temp luci-i18n-be5000-temp-ru \
 	$(foreach lang,$(XIAOMI_BE5000_LUCI_LANGS),luci-i18n-base-$(lang) \
 		luci-i18n-firewall-$(lang) luci-i18n-package-manager-$(lang))
   KERNEL_LOADADDR := 0x80088000

@@ -1,0 +1,13 @@
+. /lib/functions.sh
+
+# luci-app-xray starts transparent proxying of the LAN as soon as it runs.
+# Ship it stopped: the owner turns it on in LuCI. Only once, so that later
+# upgrades keep the choice (sysupgrade carries disabled services over by itself).
+[ "$(board_name)" = xiaomi,be5000 ] || exit 0
+[ -x /etc/init.d/xray_core ] || exit 0
+[ "$(uci -q get xray_core.@general[0].be5000_shipped_off)" = 1 ] && exit 0
+/etc/init.d/xray_core disable
+uci -q get xray_core.@general[0] >/dev/null || uci add xray_core general >/dev/null
+uci set xray_core.@general[0].be5000_shipped_off=1
+uci commit xray_core
+exit 0

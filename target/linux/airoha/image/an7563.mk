@@ -45,7 +45,7 @@ define Device/xiaomi_be5000-full
   DEVICE_PACKAGES += kmod-amneziawg amneziawg-tools luci-proto-amneziawg \
 	luci-i18n-amneziawg-ru zapret luci-app-zapret \
 	https-dns-proxy luci-app-https-dns-proxy pbr luci-app-pbr amnezia-xray-core \
-	luci-app-xray kmod-nft-tproxy \
+	luci-app-xray kmod-nft-tproxy luci-app-amneziawg-menu luci-i18n-amneziawg-menu-ru \
 	$(foreach lang,$(XIAOMI_BE5000_LUCI_LANGS),luci-i18n-https-dns-proxy-$(lang) \
 		luci-i18n-pbr-$(lang))
   SUPPORTED_DEVICES := xiaomi,be5000

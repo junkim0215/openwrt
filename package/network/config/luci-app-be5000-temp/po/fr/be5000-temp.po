@@ -1,0 +1,17 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: fr\n"
+
+msgid "CPU"
+msgstr "CPU"
+
+msgid "SoC"
+msgstr "SoC"
+
+msgid "Temperature"
+msgstr "Température"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+

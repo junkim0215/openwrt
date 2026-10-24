@@ -1,6 +1,5 @@
 msgid ""
-msgstr ""
-"Content-Type: text/plain; charset=UTF-8\n"
+msgstr "Content-Type: text/plain; charset=UTF-8"
 
 msgid "CPU"
 msgstr ""
@@ -13,3 +12,4 @@ msgstr ""
 
 msgid "Wi-Fi"
 msgstr ""
+

@@ -14,3 +14,4 @@ msgstr "Температура"
 
 msgid "Wi-Fi"
 msgstr "Wi-Fi"
+

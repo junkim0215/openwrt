@@ -1,0 +1,38 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: uk\n"
+
+msgid "NPU acceleration"
+msgstr "Прискорення NPU"
+
+msgid "Wi-Fi NPU acceleration"
+msgstr "Прискорення Wi-Fi через NPU"
+
+msgid "With the NPU on, traffic between Wi-Fi and the wired ports is forwarded in hardware at up to about 1.9 Gbit/s. Traffic that the router itself processes (VPN such as AmneziaWG or Xray, zapret, file sharing and other services on the router) then reaches the CPU at about 450 Mbit/s."
+msgstr "Коли NPU увімкнено, трафік між Wi-Fi і дротовими портами пересилається апаратно, зі швидкістю приблизно до 1,9 Гбіт/с. Трафік, який обробляє сам роутер (VPN — AmneziaWG або Xray, zapret, спільний доступ до файлів та інші служби на роутері), доходить до процесора приблизно на 450 Мбіт/с."
+
+msgid "With the NPU off, all Wi-Fi traffic goes through the CPU: about 1.1 Gbit/s between Wi-Fi and the wired ports, but up to about 900 Mbit/s for traffic of the router itself."
+msgstr "Коли NPU вимкнено, весь трафік Wi-Fi іде через процесор: приблизно 1,1 Гбіт/с між Wi-Fi і дротовими портами, зате до ~900 Мбіт/с для трафіку самого роутера."
+
+msgid "Turn the NPU off for the fastest VPN on this router: AmneziaWG gives about 250 Mbit/s without it and about 210 Mbit/s with it. Keep it on otherwise. Applying a change restarts Wi-Fi for a few seconds."
+msgstr "Вимкніть NPU заради найшвидшого VPN на цьому роутері: AmneziaWG без нього дає близько 250 Мбіт/с, з ним — близько 210 Мбіт/с. В інших випадках залиште його увімкненим. Під час застосування зміни Wi-Fi перезапуститься на кілька секунд."
+
+msgid "Use the NPU"
+msgstr "Використовувати NPU"
+
+msgid "On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi."
+msgstr "Увімкнено: найшвидша пересилка між Wi-Fi і дротовими портами. Вимкнено: найшвидші VPN і служби роутера через Wi-Fi."
+
+msgid "Wi-Fi latency"
+msgstr "Затримка Wi-Fi"
+
+msgid "Gaming mode"
+msgstr "Ігровий режим"
+
+msgid "Lower ping while someone downloads. On: other devices keep a ping of about 8 ms during a download. Off: 16-20 ms, but peak download speed is about 10% higher."
+msgstr "Менший пінг, поки хтось завантажує. Увімкнено: під час завантаження пінг інших пристроїв близько 8 мс. Вимкнено: 16–20 мс, зате максимальна швидкість завантаження приблизно на 10% вища."
+
+msgid "Grant access to the AN7552 NPU switch"
+msgstr "Доступ до перемикача NPU AN7552"
+

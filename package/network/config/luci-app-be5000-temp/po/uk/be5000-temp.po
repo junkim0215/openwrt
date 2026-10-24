@@ -1,0 +1,17 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: uk\n"
+
+msgid "CPU"
+msgstr "Процесор"
+
+msgid "SoC"
+msgstr "Чип"
+
+msgid "Temperature"
+msgstr "Температура"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+

@@ -1,0 +1,47 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_Hans\n"
+
+msgid "AmneziaWG is set up as a network interface. Its settings are in Network → Interfaces, the handshakes and the traffic in Status → AmneziaWG."
+msgstr "AmneziaWG 以网络接口的形式配置。其设置位于“网络 → 接口”，握手和流量位于“状态 → AmneziaWG”。"
+
+msgid "There are no AmneziaWG interfaces yet."
+msgstr "还没有 AmneziaWG 接口。"
+
+msgid "State"
+msgstr "状态"
+
+msgid "Peers"
+msgstr "对端"
+
+msgid "Server"
+msgstr "服务器"
+
+msgid "Firewall zone"
+msgstr "防火墙区域"
+
+msgid "none"
+msgstr "无"
+
+msgid "New client"
+msgstr "新客户端"
+
+msgid "Create the interface: %s appears in Network → Interfaces, in the wan firewall zone."
+msgstr "创建接口：%s 会出现在“网络 → 接口”中，位于 wan 防火墙区域。"
+
+msgid "Click Edit next to %s."
+msgstr "点击 %s 旁边的“编辑”。"
+
+msgid "On the General Settings tab click Load configuration…, choose the .conf file (in the AmneziaVPN app: share the connection in the AmneziaWG native format) and click Import settings."
+msgstr "在“通用设置”选项卡中点击 Load configuration…，选择 .conf 文件（在 AmneziaVPN 应用中以 AmneziaWG native format 格式分享连接），然后点击 Import settings。"
+
+msgid "On the Peers tab edit the peer and turn on Route Allowed IPs: with AllowedIPs = 0.0.0.0/0 all traffic goes into the tunnel."
+msgstr "在 Peers 选项卡中编辑对端并开启 Route Allowed IPs：AllowedIPs = 0.0.0.0/0 时所有流量都会进入隧道。"
+
+msgid "Click Save & Apply."
+msgstr "点击“保存并应用”。"
+
+msgid "Create interface %s"
+msgstr "创建接口 %s"
+

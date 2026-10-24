@@ -15,7 +15,17 @@ an7563_setup_interfaces()
 		ucidef_set_interface_lan "eth0"
 		;;
 	xiaomi,be5000)
-		ucidef_set_interface_lan "lan1 lan2 lan3 eth1"
+		# 2.5G port is WAN like on stock. The factory MACs stay in the stock
+		# U-Boot environment, which is the first block of "art"; fall back to
+		# a random pair kept in the config if it is gone
+		local lan_mac=$(mtd_get_mac_ascii art ethaddr)
+		local wan_mac=$(mtd_get_mac_ascii art ethaddr_wan)
+		[ -n "$lan_mac" ] || lan_mac=$(macaddr_random)
+		[ -n "$wan_mac" ] || wan_mac=$(macaddr_add "$lan_mac" 1)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "eth1"
+		ucidef_set_interface_macaddr "lan" "$lan_mac"
+		ucidef_set_interface_macaddr "wan" "$wan_mac"
+		ucidef_set_label_macaddr "$wan_mac"
 		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"

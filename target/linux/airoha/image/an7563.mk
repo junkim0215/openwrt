@@ -26,10 +26,10 @@ define Device/xiaomi_be5000
   DEVICE_DTS := an7563-xiaomi-be5000
   DEVICE_PACKAGES := an7552-npu-firmware kmod-phy-airoha-en8811h \
 	kmod-mt7996e kmod-mt7992-23-firmware wpad-mbedtls iw nand-utils \
-	luci-app-an7552-npu luci-i18n-an7552-npu-ru \
-	luci-app-be5000-temp luci-i18n-be5000-temp-ru \
+	luci-app-an7552-npu luci-app-be5000-temp \
 	$(foreach lang,$(XIAOMI_BE5000_LUCI_LANGS),luci-i18n-base-$(lang) \
-		luci-i18n-firewall-$(lang) luci-i18n-package-manager-$(lang))
+		luci-i18n-firewall-$(lang) luci-i18n-package-manager-$(lang) \
+		luci-i18n-an7552-npu-$(lang) luci-i18n-be5000-temp-$(lang))
   KERNEL_LOADADDR := 0x80088000
   IMAGE_SIZE := 24576k
   IMAGE/sysupgrade.bin := append-kernel | pad-to 128k | append-rootfs | \
@@ -45,9 +45,9 @@ define Device/xiaomi_be5000-full
   DEVICE_PACKAGES += kmod-amneziawg amneziawg-tools luci-proto-amneziawg \
 	luci-i18n-amneziawg-ru zapret luci-app-zapret \
 	https-dns-proxy luci-app-https-dns-proxy pbr luci-app-pbr amnezia-xray-core \
-	luci-app-xray kmod-nft-tproxy luci-app-amneziawg-menu luci-i18n-amneziawg-menu-ru \
+	luci-app-xray kmod-nft-tproxy luci-app-amneziawg-menu \
 	$(foreach lang,$(XIAOMI_BE5000_LUCI_LANGS),luci-i18n-https-dns-proxy-$(lang) \
-		luci-i18n-pbr-$(lang))
+		luci-i18n-pbr-$(lang) luci-i18n-amneziawg-menu-$(lang))
   SUPPORTED_DEVICES := xiaomi,be5000
   ARTIFACTS :=
 endef

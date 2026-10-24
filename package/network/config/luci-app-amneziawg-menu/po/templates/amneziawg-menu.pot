@@ -1,0 +1,45 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8"
+
+msgid "AmneziaWG is set up as a network interface. Its settings are in Network → Interfaces, the handshakes and the traffic in Status → AmneziaWG."
+msgstr ""
+
+msgid "There are no AmneziaWG interfaces yet."
+msgstr ""
+
+msgid "State"
+msgstr ""
+
+msgid "Peers"
+msgstr ""
+
+msgid "Server"
+msgstr ""
+
+msgid "Firewall zone"
+msgstr ""
+
+msgid "none"
+msgstr ""
+
+msgid "New client"
+msgstr ""
+
+msgid "Create the interface: %s appears in Network → Interfaces, in the wan firewall zone."
+msgstr ""
+
+msgid "Click Edit next to %s."
+msgstr ""
+
+msgid "On the General Settings tab click Load configuration…, choose the .conf file (in the AmneziaVPN app: share the connection in the AmneziaWG native format) and click Import settings."
+msgstr ""
+
+msgid "On the Peers tab edit the peer and turn on Route Allowed IPs: with AllowedIPs = 0.0.0.0/0 all traffic goes into the tunnel."
+msgstr ""
+
+msgid "Click Save & Apply."
+msgstr ""
+
+msgid "Create interface %s"
+msgstr ""
+

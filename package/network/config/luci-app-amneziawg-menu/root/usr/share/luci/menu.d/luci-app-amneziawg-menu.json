@@ -1,0 +1,13 @@
+{
+	"admin/services/amneziawg": {
+		"title": "AmneziaWG",
+		"order": 40,
+		"action": {
+			"type": "view",
+			"path": "amneziawg-menu/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-amneziawg-menu" ]
+		}
+	}
+}

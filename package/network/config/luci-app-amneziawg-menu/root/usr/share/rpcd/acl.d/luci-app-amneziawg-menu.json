@@ -1,0 +1,11 @@
+{
+	"luci-app-amneziawg-menu": {
+		"description": "Grant access to the AmneziaWG interface list",
+		"read": {
+			"uci": [ "network", "firewall" ]
+		},
+		"write": {
+			"uci": [ "network", "firewall" ]
+		}
+	}
+}

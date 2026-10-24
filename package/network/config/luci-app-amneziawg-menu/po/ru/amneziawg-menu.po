@@ -44,3 +44,4 @@ msgstr "Нажмите «Сохранить и применить»."
 
 msgid "Create interface %s"
 msgstr "Создать интерфейс %s"
+

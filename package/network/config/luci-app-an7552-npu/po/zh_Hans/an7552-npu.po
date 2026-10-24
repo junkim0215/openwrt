@@ -1,0 +1,38 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_Hans\n"
+
+msgid "NPU acceleration"
+msgstr "NPU 加速"
+
+msgid "Wi-Fi NPU acceleration"
+msgstr "Wi-Fi NPU 加速"
+
+msgid "With the NPU on, traffic between Wi-Fi and the wired ports is forwarded in hardware at up to about 1.9 Gbit/s. Traffic that the router itself processes (VPN such as AmneziaWG or Xray, zapret, file sharing and other services on the router) then reaches the CPU at about 450 Mbit/s."
+msgstr "开启 NPU 时，Wi-Fi 与有线端口之间的流量由硬件转发，速度最高约 1.9 Gbit/s。由路由器自身处理的流量（AmneziaWG 或 Xray 等 VPN、zapret、文件共享以及路由器上的其他服务）到达 CPU 的速度约为 450 Mbit/s。"
+
+msgid "With the NPU off, all Wi-Fi traffic goes through the CPU: about 1.1 Gbit/s between Wi-Fi and the wired ports, but up to about 900 Mbit/s for traffic of the router itself."
+msgstr "关闭 NPU 时，所有 Wi-Fi 流量都经过 CPU：Wi-Fi 与有线端口之间约 1.1 Gbit/s，但路由器自身的流量最高可达约 900 Mbit/s。"
+
+msgid "Turn the NPU off for the fastest VPN on this router: AmneziaWG gives about 250 Mbit/s without it and about 210 Mbit/s with it. Keep it on otherwise. Applying a change restarts Wi-Fi for a few seconds."
+msgstr "若要让本路由器上的 VPN 最快，请关闭 NPU：AmneziaWG 关闭 NPU 时约 250 Mbit/s，开启时约 210 Mbit/s。其他情况请保持开启。应用更改时 Wi-Fi 会重启几秒钟。"
+
+msgid "Use the NPU"
+msgstr "使用 NPU"
+
+msgid "On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi."
+msgstr "开启：Wi-Fi 与有线端口之间转发最快。关闭：通过 Wi-Fi 的 VPN 和路由器服务最快。"
+
+msgid "Wi-Fi latency"
+msgstr "Wi-Fi 延迟"
+
+msgid "Gaming mode"
+msgstr "游戏模式"
+
+msgid "Lower ping while someone downloads. On: other devices keep a ping of about 8 ms during a download. Off: 16-20 ms, but peak download speed is about 10% higher."
+msgstr "有人下载时降低延迟。开启：下载期间其他设备的延迟约 8 ms。关闭：16–20 ms，但峰值下载速度约高 10%。"
+
+msgid "Grant access to the AN7552 NPU switch"
+msgstr "允许访问 AN7552 NPU 开关"
+

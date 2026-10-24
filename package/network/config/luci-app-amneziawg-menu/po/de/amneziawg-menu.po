@@ -1,0 +1,47 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: de\n"
+
+msgid "AmneziaWG is set up as a network interface. Its settings are in Network → Interfaces, the handshakes and the traffic in Status → AmneziaWG."
+msgstr "AmneziaWG wird als Netzwerkschnittstelle eingerichtet. Die Einstellungen stehen unter „Netzwerk → Schnittstellen“, Handshakes und Verkehr unter „Status → AmneziaWG“."
+
+msgid "There are no AmneziaWG interfaces yet."
+msgstr "Es gibt noch keine AmneziaWG-Schnittstellen."
+
+msgid "State"
+msgstr "Zustand"
+
+msgid "Peers"
+msgstr "Partner"
+
+msgid "Server"
+msgstr "Server"
+
+msgid "Firewall zone"
+msgstr "Firewall-Zone"
+
+msgid "none"
+msgstr "keine"
+
+msgid "New client"
+msgstr "Neuer Client"
+
+msgid "Create the interface: %s appears in Network → Interfaces, in the wan firewall zone."
+msgstr "Schnittstelle anlegen: %s erscheint unter „Netzwerk → Schnittstellen“ in der Firewall-Zone wan."
+
+msgid "Click Edit next to %s."
+msgstr "Klicken Sie neben %s auf „Bearbeitung“."
+
+msgid "On the General Settings tab click Load configuration…, choose the .conf file (in the AmneziaVPN app: share the connection in the AmneziaWG native format) and click Import settings."
+msgstr "Klicken Sie im Reiter „Allgemeine Einstellungen“ auf Load configuration…, wählen Sie die .conf-Datei (in der AmneziaVPN-App: die Verbindung im Format AmneziaWG native format teilen) und klicken Sie auf Import settings."
+
+msgid "On the Peers tab edit the peer and turn on Route Allowed IPs: with AllowedIPs = 0.0.0.0/0 all traffic goes into the tunnel."
+msgstr "Bearbeiten Sie im Reiter Peers den Partner und schalten Sie Route Allowed IPs ein: mit AllowedIPs = 0.0.0.0/0 geht der gesamte Verkehr in den Tunnel."
+
+msgid "Click Save & Apply."
+msgstr "Klicken Sie auf „Speichern & Anwenden“."
+
+msgid "Create interface %s"
+msgstr "Schnittstelle %s anlegen"
+

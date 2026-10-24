@@ -1,0 +1,38 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: fr\n"
+
+msgid "NPU acceleration"
+msgstr "Accélération NPU"
+
+msgid "Wi-Fi NPU acceleration"
+msgstr "Accélération Wi-Fi par la NPU"
+
+msgid "With the NPU on, traffic between Wi-Fi and the wired ports is forwarded in hardware at up to about 1.9 Gbit/s. Traffic that the router itself processes (VPN such as AmneziaWG or Xray, zapret, file sharing and other services on the router) then reaches the CPU at about 450 Mbit/s."
+msgstr "NPU activée, le trafic entre le Wi-Fi et les ports filaires est transféré par le matériel jusqu’à environ 1,9 Gbit/s. Le trafic traité par le routeur lui-même (VPN comme AmneziaWG ou Xray, zapret, partage de fichiers et autres services du routeur) atteint alors le CPU à environ 450 Mbit/s."
+
+msgid "With the NPU off, all Wi-Fi traffic goes through the CPU: about 1.1 Gbit/s between Wi-Fi and the wired ports, but up to about 900 Mbit/s for traffic of the router itself."
+msgstr "NPU désactivée, tout le trafic Wi-Fi passe par le CPU : environ 1,1 Gbit/s entre le Wi-Fi et les ports filaires, mais jusqu’à environ 900 Mbit/s pour le trafic du routeur lui-même."
+
+msgid "Turn the NPU off for the fastest VPN on this router: AmneziaWG gives about 250 Mbit/s without it and about 210 Mbit/s with it. Keep it on otherwise. Applying a change restarts Wi-Fi for a few seconds."
+msgstr "Désactivez la NPU pour le VPN le plus rapide sur ce routeur : AmneziaWG atteint environ 250 Mbit/s sans elle et environ 210 Mbit/s avec elle. Sinon, laissez-la activée. L’application d’une modification redémarre le Wi-Fi pendant quelques secondes."
+
+msgid "Use the NPU"
+msgstr "Utiliser la NPU"
+
+msgid "On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi."
+msgstr "Activé : transfert le plus rapide entre le Wi-Fi et les ports filaires. Désactivé : VPN et services du routeur les plus rapides en Wi-Fi."
+
+msgid "Wi-Fi latency"
+msgstr "Latence Wi-Fi"
+
+msgid "Gaming mode"
+msgstr "Mode jeu"
+
+msgid "Lower ping while someone downloads. On: other devices keep a ping of about 8 ms during a download. Off: 16-20 ms, but peak download speed is about 10% higher."
+msgstr "Ping plus faible pendant qu’un appareil télécharge. Activé : les autres appareils gardent un ping d’environ 8 ms pendant un téléchargement. Désactivé : 16–20 ms, mais le débit maximal de téléchargement est environ 10 % plus élevé."
+
+msgid "Grant access to the AN7552 NPU switch"
+msgstr "Accorder l’accès à l’interrupteur de la NPU AN7552"
+

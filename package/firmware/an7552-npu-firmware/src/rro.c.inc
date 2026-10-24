@@ -142,14 +142,9 @@ static int rx_deliver_words(uint32_t token, uint32_t band,
 	volatile uint32_t *q =
 		(void *)(uintptr_t)(AN7552_NPU_BASE + AN7552_RRO_CONTROL);
 	volatile uint32_t *data, *host, *completion, *sidecar;
-	/* Read the frame through the cached alias, like the header parser:
-	 * buffers are reused in FIFO order of 6144 tokens, so no line of an
-	 * earlier use is still cached. A cache line costs one DDR access
-	 * instead of one per word.
-	 */
-	const volatile uint8_t *packet =
-		RX_HEADER_ALIAS(AN7552_RX_BUFFER_HOST + token * 2048);
-	volatile uint8_t *destination;
+	volatile uint8_t *packet = (void *)rx_words(AN7552_RX_BUFFER_HOST +
+						    token * 2048),
+			 *destination;
 	uint32_t length = (saved[1] >> 16) & 16383, producer = q[2], host_index,
 		 info, copied = 0;
 	data = (void *)(uintptr_t)(AN7552_NPU_BASE + AN7552_RX_DATA_CONTROL +

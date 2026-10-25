@@ -15,11 +15,12 @@ an7563_setup_interfaces()
 		ucidef_set_interface_lan "eth0"
 		;;
 	xiaomi,be5000)
-		# 2.5G port is WAN like on stock. The factory MACs stay in the stock
-		# U-Boot environment, which is the first block of "art"; fall back to
-		# a random pair kept in the config if it is gone
-		local lan_mac=$(mtd_get_mac_ascii art ethaddr)
-		local wan_mac=$(mtd_get_mac_ascii art ethaddr_wan)
+		# 2.5G port is WAN like on stock. The kernel takes the port MACs from
+		# the stock U-Boot environment ("stock-env", the first block of "art")
+		# through NVMEM; the same pair is kept in the config for br-lan and
+		# wan, with a random fallback when the environment is gone
+		local lan_mac=$(mtd_get_mac_ascii stock-env ethaddr)
+		local wan_mac=$(mtd_get_mac_ascii stock-env ethaddr_wan)
 		[ -n "$lan_mac" ] || lan_mac=$(macaddr_random)
 		[ -n "$wan_mac" ] || wan_mac=$(macaddr_add "$lan_mac" 1)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "eth1"

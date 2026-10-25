@@ -142,6 +142,8 @@
 };
 
 &gdm1 {
+	nvmem-cells = <&macaddr_lan 0>;
+	nvmem-cell-names = "mac-address";
 	status = "okay";
 };
 
@@ -198,6 +200,33 @@
 			label = "ubi-data";
 			reg = <0x18c0000 0x5d20000>;
 		};
+
+		/*
+		 * The first block of "art" again: the stock Xiaomi U-Boot
+		 * environment (64 KiB with a CRC) with the factory MAC addresses.
+		 * The installer keeps it and nothing here writes it. Listed last
+		 * so that the partition numbers stay: the bootloader passes
+		 * root=/dev/mtdblock5.
+		 */
+		stock-env@80000 {
+			label = "stock-env";
+			reg = <0x80000 0x20000>;
+			read-only;
+
+			nvmem-layout {
+				compatible = "u-boot,env";
+				env-size = <0x10000>;
+
+				macaddr_lan: ethaddr {
+					#nvmem-cell-cells = <1>;
+				};
+
+				macaddr_wan: ethaddr_wan {
+					compatible = "mac-base";
+					#nvmem-cell-cells = <1>;
+				};
+			};
+		};
 	};
 };
 
@@ -216,8 +245,10 @@
 };
 
 &gdm2 {
-	status = "okay";
+	nvmem-cells = <&macaddr_wan 0>;
+	nvmem-cell-names = "mac-address";
 	phy-handle = <&phy_2p5g>;
+	status = "okay";
 };
 
 &switch {

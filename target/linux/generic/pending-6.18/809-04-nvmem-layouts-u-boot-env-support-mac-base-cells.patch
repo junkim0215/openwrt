@@ -1,0 +1,26 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] nvmem: layouts: u-boot-env: support mac-base cells
+
+The layout converts only the variable named "ethaddr" into a binary MAC
+address. Vendors keep further addresses under other names: Xiaomi stores
+the WAN address of the BE5000 as "ethaddr_wan". Run the shared mac-base
+parser on every other cell, so a cell node with compatible = "mac-base"
+turns an ASCII, hex or raw value into a MAC address the same way the
+fixed-layout and ascii-env layouts do.
+
+Signed-off-by: Pavel Bragin <pabragin@yandex.ru>
+---
+ drivers/nvmem/layouts/u-boot-env.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/drivers/nvmem/layouts/u-boot-env.c
++++ b/drivers/nvmem/layouts/u-boot-env.c
+@@ -78,6 +78,8 @@
+ 			info.raw_len = strlen(value);
+ 			info.bytes = ETH_ALEN;
+ 			info.read_post_process = u_boot_env_read_post_process_ethaddr;
++		} else {
++			nvmem_layout_parse_mac_base(&info);
+ 		}
+ 
+ 		nvmem_add_one_cell(nvmem, &info);

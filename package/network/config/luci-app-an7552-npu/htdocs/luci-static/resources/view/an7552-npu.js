@@ -25,6 +25,15 @@ return view.extend({
 		o.default = o.disabled;
 		o.rmempty = false;
 
+		s = m.section(form.NamedSection, 'pppoe', 'pppoe', _('PPPoE'),
+			_('Hardware routing offload cannot send a packet larger than the PPPoE MTU and leaves it to the CPU, which forwards only about 200-300 Mbit/s. The router therefore lowers the TCP segment size (MSS) of every connection through PPPoE to this value. 1452 fits the usual PPPoE MTU of 1492; use 1460 for an MTU of 1500.') + '<br /><br />' +
+			_('Empty: only the MSS clamping of the firewall zone, which takes the size from the routes and misses connections that pbr or mwan3 send through PPPoE.'));
+
+		o = s.option(form.Value, 'mss', _('TCP MSS'),
+			_('From 536 to 1460. IPv6 connections get 20 bytes less.'));
+		o.datatype = 'range(536,1460)';
+		o.placeholder = _('off');
+
 		return m.render();
 	}
 });

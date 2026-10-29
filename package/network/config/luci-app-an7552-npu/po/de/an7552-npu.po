@@ -36,3 +36,21 @@ msgstr "Niedrigerer Ping, während jemand herunterlädt. Ein: andere Geräte beh
 msgid "Grant access to the AN7552 NPU switch"
 msgstr "Zugriff auf den Schalter der AN7552-NPU gewähren"
 
+
+msgid "PPPoE"
+msgstr "PPPoE"
+
+msgid "Hardware routing offload cannot send a packet larger than the PPPoE MTU and leaves it to the CPU, which forwards only about 200-300 Mbit/s. The router therefore lowers the TCP segment size (MSS) of every connection through PPPoE to this value. 1452 fits the usual PPPoE MTU of 1492; use 1460 for an MTU of 1500."
+msgstr "Die Hardware-Routing-Beschleunigung kann kein Paket senden, das größer als die PPPoE-MTU ist, und überlässt es der CPU, die nur etwa 200–300 Mbit/s weiterleitet. Deshalb senkt der Router die TCP-Segmentgröße (MSS) jeder Verbindung über PPPoE auf diesen Wert. 1452 passt zur üblichen PPPoE-MTU von 1492; bei einer MTU von 1500 verwenden Sie 1460."
+
+msgid "Empty: only the MSS clamping of the firewall zone, which takes the size from the routes and misses connections that pbr or mwan3 send through PPPoE."
+msgstr "Leer: nur die MSS-Begrenzung der Firewall-Zone. Sie ermittelt die Größe aus den Routen und erfasst keine Verbindungen, die pbr oder mwan3 über PPPoE leiten."
+
+msgid "TCP MSS"
+msgstr "TCP-MSS"
+
+msgid "From 536 to 1460. IPv6 connections get 20 bytes less."
+msgstr "Von 536 bis 1460. IPv6-Verbindungen erhalten 20 Byte weniger."
+
+msgid "off"
+msgstr "aus"

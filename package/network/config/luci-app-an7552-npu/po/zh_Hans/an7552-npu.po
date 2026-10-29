@@ -36,3 +36,21 @@ msgstr "有人下载时降低延迟。开启：下载期间其他设备的延迟
 msgid "Grant access to the AN7552 NPU switch"
 msgstr "允许访问 AN7552 NPU 开关"
 
+
+msgid "PPPoE"
+msgstr "PPPoE"
+
+msgid "Hardware routing offload cannot send a packet larger than the PPPoE MTU and leaves it to the CPU, which forwards only about 200-300 Mbit/s. The router therefore lowers the TCP segment size (MSS) of every connection through PPPoE to this value. 1452 fits the usual PPPoE MTU of 1492; use 1460 for an MTU of 1500."
+msgstr "硬件路由加速无法发送大于 PPPoE MTU 的数据包，会交给 CPU 处理，而 CPU 只能转发约 200-300 Mbit/s。因此路由器会把所有经 PPPoE 的连接的 TCP 分段大小（MSS）降到此值。1452 适用于常见的 PPPoE MTU 1492；MTU 为 1500 时请使用 1460。"
+
+msgid "Empty: only the MSS clamping of the firewall zone, which takes the size from the routes and misses connections that pbr or mwan3 send through PPPoE."
+msgstr "留空：只使用防火墙区域的 MSS 钳制。它根据路由确定大小，无法覆盖由 pbr 或 mwan3 经 PPPoE 发送的连接。"
+
+msgid "TCP MSS"
+msgstr "TCP MSS"
+
+msgid "From 536 to 1460. IPv6 connections get 20 bytes less."
+msgstr "范围 536 到 1460。IPv6 连接少 20 字节。"
+
+msgid "off"
+msgstr "关闭"

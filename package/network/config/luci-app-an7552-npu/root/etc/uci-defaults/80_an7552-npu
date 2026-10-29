@@ -10,4 +10,10 @@ uci -q get an7552-npu.wifi >/dev/null || {
 	uci set an7552-npu.wifi.gaming=0
 	uci commit an7552-npu
 }
+
+uci -q get an7552-npu.pppoe >/dev/null || {
+	uci set an7552-npu.pppoe=pppoe
+	uci set an7552-npu.pppoe.mss=1452
+	uci commit an7552-npu
+}
 exit 0

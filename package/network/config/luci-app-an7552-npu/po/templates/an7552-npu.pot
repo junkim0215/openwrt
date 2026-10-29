@@ -34,3 +34,21 @@ msgstr ""
 msgid "Grant access to the AN7552 NPU switch"
 msgstr ""
 
+
+msgid "PPPoE"
+msgstr ""
+
+msgid "Hardware routing offload cannot send a packet larger than the PPPoE MTU and leaves it to the CPU, which forwards only about 200-300 Mbit/s. The router therefore lowers the TCP segment size (MSS) of every connection through PPPoE to this value. 1452 fits the usual PPPoE MTU of 1492; use 1460 for an MTU of 1500."
+msgstr ""
+
+msgid "Empty: only the MSS clamping of the firewall zone, which takes the size from the routes and misses connections that pbr or mwan3 send through PPPoE."
+msgstr ""
+
+msgid "TCP MSS"
+msgstr ""
+
+msgid "From 536 to 1460. IPv6 connections get 20 bytes less."
+msgstr ""
+
+msgid "off"
+msgstr ""

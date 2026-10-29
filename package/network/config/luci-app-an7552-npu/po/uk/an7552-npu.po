@@ -36,3 +36,21 @@ msgstr "Менший пінг, поки хтось завантажує. Уві�
 msgid "Grant access to the AN7552 NPU switch"
 msgstr "Доступ до перемикача NPU AN7552"
 
+
+msgid "PPPoE"
+msgstr "PPPoE"
+
+msgid "Hardware routing offload cannot send a packet larger than the PPPoE MTU and leaves it to the CPU, which forwards only about 200-300 Mbit/s. The router therefore lowers the TCP segment size (MSS) of every connection through PPPoE to this value. 1452 fits the usual PPPoE MTU of 1492; use 1460 for an MTU of 1500."
+msgstr "Апаратне прискорення маршрутизації не може надіслати пакет, більший за MTU PPPoE, і віддає його процесору, а той пропускає лише близько 200–300 Мбіт/с. Тому роутер зменшує розмір TCP-сегмента (MSS) усіх з'єднань через PPPoE до цього значення. 1452 підходить для звичайного MTU PPPoE 1492; для MTU 1500 вкажіть 1460."
+
+msgid "Empty: only the MSS clamping of the firewall zone, which takes the size from the routes and misses connections that pbr or mwan3 send through PPPoE."
+msgstr "Порожньо: лише обмеження MSS у зоні брандмауера. Воно бере розмір із маршрутів і пропускає з'єднання, які pbr або mwan3 спрямовують через PPPoE."
+
+msgid "TCP MSS"
+msgstr "TCP MSS"
+
+msgid "From 536 to 1460. IPv6 connections get 20 bytes less."
+msgstr "Від 536 до 1460. Для з'єднань IPv6 на 20 байтів менше."
+
+msgid "off"
+msgstr "вимк."

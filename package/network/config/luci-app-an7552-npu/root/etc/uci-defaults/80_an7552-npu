@@ -16,4 +16,9 @@ uci -q get an7552-npu.pppoe >/dev/null || {
 	uci set an7552-npu.pppoe.mss=1452
 	uci commit an7552-npu
 }
+uci -q get an7552-npu.mlo >/dev/null || {
+	uci set an7552-npu.mlo=mlo
+	uci set an7552-npu.mlo.enabled=0
+	uci commit an7552-npu
+}
 exit 0

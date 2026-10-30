@@ -6,12 +6,12 @@ return view.extend({
 	render: function() {
 		var m, s, o;
 
-		m = new form.Map('an7552-npu', _('Wi-Fi NPU acceleration'),
+		m = new form.Map('an7552-npu', _('Advanced settings'));
+
+		s = m.section(form.NamedSection, 'settings', 'npu', _('Wi-Fi NPU acceleration'),
 			_('With the NPU on, traffic between Wi-Fi and the wired ports is forwarded in hardware at up to about 1.9 Gbit/s. Traffic that the router itself processes (VPN such as AmneziaWG or Xray, zapret, file sharing and other services on the router) then reaches the CPU at about 450 Mbit/s.') + '<br /><br />' +
 			_('With the NPU off, all Wi-Fi traffic goes through the CPU: about 1.1 Gbit/s between Wi-Fi and the wired ports, but up to about 900 Mbit/s for traffic of the router itself.') + '<br /><br />' +
 			_('Turn the NPU off for the fastest VPN on this router: AmneziaWG gives about 250 Mbit/s without it and about 210 Mbit/s with it. Keep it on otherwise. Applying a change restarts Wi-Fi for a few seconds.'));
-
-		s = m.section(form.NamedSection, 'settings', 'npu');
 
 		o = s.option(form.Flag, 'enabled', _('Use the NPU'),
 			_('On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi.'));
@@ -33,6 +33,29 @@ return view.extend({
 			_('From 536 to 1460. IPv6 connections get 20 bytes less.'));
 		o.datatype = 'range(536,1460)';
 		o.placeholder = _('off');
+
+		s = m.section(form.NamedSection, 'mlo', 'mlo', _('Wi-Fi 7 MLO'),
+			_('A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops.') + '<br /><br />' +
+			_('The network uses WPA3 only. Change it here only: the router rebuilds it from these settings and removes it when MLO is off.'));
+
+		o = s.option(form.Flag, 'enabled', _('Enable MLO network'));
+		o.default = o.disabled;
+		o.rmempty = false;
+
+		o = s.option(form.Value, 'ssid', _('Network name (SSID)'));
+		o.datatype = 'maxlength(32)';
+		o.depends('enabled', '1');
+		o.validate = function(section_id, value) {
+			return value ? true : _('Expecting: non-empty value');
+		};
+
+		o = s.option(form.Value, 'key', _('Password'));
+		o.password = true;
+		o.datatype = 'wpakey';
+		o.depends('enabled', '1');
+		o.validate = function(section_id, value) {
+			return (value && value.length >= 8) ? true : _('At least 8 characters');
+		};
 
 		return m.render();
 	}

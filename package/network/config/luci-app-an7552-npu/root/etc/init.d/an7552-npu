@@ -158,14 +158,22 @@ start_service() {
 }
 
 reload_service() {
-	local wifi_changed=
+	local wifi_changed= mlo_changed=
 
 	mss_apply && /etc/init.d/firewall reload
 	txop_apply && wifi_changed=1
-	mlo_apply && wifi_changed=1
+	mlo_apply && mlo_changed=1
 	# a driver reload restarts Wi-Fi with the new settings anyway
 	npu_apply && return 0
-	[ -n "$wifi_changed" ] && ubus -t 2 list network.wireless >/dev/null 2>&1 && wifi reload
+	ubus -t 2 list network.wireless >/dev/null 2>&1 || return 0
+	# hostapd cannot replace a changed MLD BSS in place: the 2.4 GHz link
+	# fails with "Link ID 0 already in use" and takes that radio down
+	if [ -n "$mlo_changed" ]; then
+		wifi down
+		wifi up
+	elif [ -n "$wifi_changed" ]; then
+		wifi reload
+	fi
 	return 0
 }
 

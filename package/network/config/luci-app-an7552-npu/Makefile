@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-an7552-npu
 PKG_VERSION:=1
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 PKG_LICENSE:=GPL-2.0-only
 
 LUCI_TITLE:=LuCI switch for the AN7552 Wi-Fi NPU offload

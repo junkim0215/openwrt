@@ -58,8 +58,8 @@ msgstr "关闭"
 msgid "Wi-Fi 7 MLO"
 msgstr "Wi-Fi 7 MLO"
 
-msgid "A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops."
-msgstr "为 Wi-Fi 7 设备同时在 2.4 GHz 和 5 GHz 上提供的独立网络（多链路操作）。此类设备通过两个频段保持连接，5 GHz 断开时仍可在 2.4 GHz 上工作。"
+msgid "A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops. While the MLO network is on, all networks of the router use 40 MHz on 2.4 GHz and 160 MHz on 5 GHz (channels 36-64)."
+msgstr "为 Wi-Fi 7 设备同时在 2.4 GHz 和 5 GHz 上提供的独立网络（多链路操作）。此类设备通过两个频段保持连接，5 GHz 断开时仍可在 2.4 GHz 上工作。MLO 网络开启期间，路由器的所有网络在 2.4 GHz 上使用 40 MHz，在 5 GHz 上使用 160 MHz（信道 36–64）。"
 
 msgid "The network uses WPA3 only. Change it here only: the router rebuilds it from these settings and removes it when MLO is off."
 msgstr "该网络仅使用 WPA3。请只在此处修改：路由器根据这些设置生成该网络，并在关闭 MLO 时将其删除。"

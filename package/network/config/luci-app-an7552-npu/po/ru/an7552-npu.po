@@ -58,8 +58,8 @@ msgstr "выкл."
 msgid "Wi-Fi 7 MLO"
 msgstr "Wi-Fi 7 MLO"
 
-msgid "A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops."
-msgstr "Отдельная сеть для устройств с Wi-Fi 7 сразу на 2,4 и 5 ГГц (Multi-Link Operation). Такое устройство подключено через оба диапазона и продолжает работать на 2,4 ГГц, если 5 ГГц пропадёт."
+msgid "A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops. While the MLO network is on, all networks of the router use 40 MHz on 2.4 GHz and 160 MHz on 5 GHz (channels 36-64)."
+msgstr "Отдельная сеть для устройств с Wi-Fi 7 сразу на 2,4 и 5 ГГц (Multi-Link Operation). Такое устройство подключено через оба диапазона и продолжает работать на 2,4 ГГц, если 5 ГГц пропадёт. Пока сеть MLO включена, все сети роутера работают на 2,4 ГГц на 40 МГц, а на 5 ГГц на 160 МГц (каналы 36–64)."
 
 msgid "The network uses WPA3 only. Change it here only: the router rebuilds it from these settings and removes it when MLO is off."
 msgstr "Сеть работает только с WPA3. Меняйте её только здесь: роутер собирает её из этих настроек и удаляет, когда MLO выключено."

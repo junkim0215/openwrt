@@ -35,7 +35,7 @@ return view.extend({
 		o.placeholder = _('off');
 
 		s = m.section(form.NamedSection, 'mlo', 'mlo', _('Wi-Fi 7 MLO'),
-			_('A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops.') + '<br /><br />' +
+			_('A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops. While the MLO network is on, all networks of the router use 40 MHz on 2.4 GHz and 160 MHz on 5 GHz (channels 36-64).') + '<br /><br />' +
 			_('The network uses WPA3 only. Change it here only: the router rebuilds it from these settings and removes it when MLO is off.'));
 
 		o = s.option(form.Flag, 'enabled', _('Enable MLO network'));

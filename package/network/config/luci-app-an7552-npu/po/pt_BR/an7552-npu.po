@@ -58,8 +58,8 @@ msgstr "desligado"
 msgid "Wi-Fi 7 MLO"
 msgstr "Wi-Fi 7 MLO"
 
-msgid "A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops."
-msgstr "Uma rede separada para dispositivos Wi-Fi 7 em 2,4 e 5 GHz ao mesmo tempo (Multi-Link Operation). Esse dispositivo fica conectado pelas duas bandas e continua funcionando em 2,4 GHz se o 5 GHz cair."
+msgid "A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops. While the MLO network is on, all networks of the router use 40 MHz on 2.4 GHz and 160 MHz on 5 GHz (channels 36-64)."
+msgstr "Uma rede separada para dispositivos Wi-Fi 7 em 2,4 e 5 GHz ao mesmo tempo (Multi-Link Operation). Esse dispositivo fica conectado pelas duas bandas e continua funcionando em 2,4 GHz se o 5 GHz cair. Enquanto a rede MLO está ligada, todas as redes do roteador usam 40 MHz em 2,4 GHz e 160 MHz em 5 GHz (canais 36–64)."
 
 msgid "The network uses WPA3 only. Change it here only: the router rebuilds it from these settings and removes it when MLO is off."
 msgstr "A rede usa somente WPA3. Altere-a apenas aqui: o roteador a monta a partir destas configurações e a remove quando o MLO está desligado."

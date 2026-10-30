@@ -101,11 +101,39 @@ chain pppoe_mss {
 	return 0
 }
 
+# Radio settings while MLO is on: 40 MHz on 2.4 GHz even next to other
+# networks (noscan), 160 MHz on 5 GHz where the channel allows it. The
+# previous value of each option is kept in an7552-npu.mlo as
+# saved_<band>_<option> ("-" = unset) and comes back when MLO is off.
+mlo_radio_set() { # <radio> <band> <option> <value>
+	local saved
+
+	config_get saved mlo saved_$2_$3
+	if [ -z "$saved" ]; then
+		saved=$(uci -q get wireless.$1.$3)
+		uci set an7552-npu.mlo.saved_$2_$3="${saved:--}"
+	fi
+	uci set wireless.$1.$3="$4"
+}
+
+mlo_radio_restore() { # <radio> <band> <option>
+	local saved
+
+	config_get saved mlo saved_$2_$3
+	[ -n "$saved" ] || return 0
+	if [ "$saved" = - ]; then
+		uci -q delete wireless.$1.$3
+	else
+		uci set wireless.$1.$3="$saved"
+	fi
+	uci -q delete an7552-npu.mlo.saved_$2_$3
+}
+
 # Wi-Fi 7 MLO: one WPA3 wifi-iface over every enabled 2.4 and 5 GHz radio.
 # The section is owned by this script: it is rebuilt from an7552-npu.mlo
 # and removed when MLO is off. Returns 0 when the wireless config changed.
 mlo_apply() {
-	local enabled ssid key network radio radios= n=0 cur new
+	local enabled ssid key network radio radios= radio2= radio5= n=0 on= cur new
 
 	config_load an7552-npu
 	config_get_bool enabled mlo enabled 0
@@ -114,15 +142,20 @@ mlo_apply() {
 	config_get network mlo network lan
 
 	for radio in $(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-device$/\1/p"); do
-		case "$(uci -q get wireless.$radio.band)" in 2g|5g) ;; *) continue;; esac
+		case "$(uci -q get wireless.$radio.band)" in
+		2g) radio2=$radio;;
+		5g) radio5=$radio;;
+		*) continue;;
+		esac
 		[ "$(uci -q get wireless.$radio.disabled)" = 1 ] && continue
 		radios="$radios $radio"
 		n=$((n + 1))
 	done
 
-	cur=$(uci -q show wireless.$MLO_IFACE)
+	cur=$(uci -q show wireless.$MLO_IFACE; for radio in $radio2 $radio5; do uci -q show wireless.$radio; done)
 	uci -q delete wireless.$MLO_IFACE
 	if [ "$enabled" = 1 ] && [ -n "$ssid" ] && [ ${#key} -ge 8 ] && [ $n -ge 2 ]; then
+		on=1
 		uci set wireless.$MLO_IFACE=wifi-iface
 		for radio in $radios; do
 			uci add_list wireless.$MLO_IFACE.device=$radio
@@ -136,13 +169,33 @@ mlo_apply() {
 	elif [ "$enabled" = 1 ]; then
 		logger -t an7552-npu "MLO needs a name, a password of 8+ characters and two radios"
 	fi
-	new=$(uci -q show wireless.$MLO_IFACE)
+
+	if [ -n "$on" ]; then
+		if [ -n "$radio2" ]; then
+			mlo_radio_set $radio2 2g htmode EHT40
+			mlo_radio_set $radio2 2g noscan 1
+		fi
+		# 160 MHz only fits channels 36-64 (or auto) in most regions
+		case "$(uci -q get wireless.$radio5.channel)" in
+		''|auto|36|40|44|48|52|56|60|64)
+			[ -n "$radio5" ] && mlo_radio_set $radio5 5g htmode EHT160;;
+		*)
+			logger -t an7552-npu "5 GHz channel $(uci -q get wireless.$radio5.channel) has no 160 MHz, width left as is";;
+		esac
+	else
+		[ -n "$radio2" ] && mlo_radio_restore $radio2 2g htmode
+		[ -n "$radio2" ] && mlo_radio_restore $radio2 2g noscan
+		[ -n "$radio5" ] && mlo_radio_restore $radio5 5g htmode
+	fi
+	uci commit an7552-npu
+
+	new=$(uci -q show wireless.$MLO_IFACE; for radio in $radio2 $radio5; do uci -q show wireless.$radio; done)
 	if [ "$cur" = "$new" ]; then
-		uci revert wireless.$MLO_IFACE
+		uci revert wireless
 		return 1
 	fi
 	uci commit wireless
-	if [ -n "$new" ]; then
+	if [ -n "$on" ]; then
 		logger -t an7552-npu "MLO network $ssid set on$radios"
 	else
 		logger -t an7552-npu "MLO network removed"

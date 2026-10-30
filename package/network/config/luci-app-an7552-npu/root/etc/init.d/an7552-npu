@@ -1,6 +1,7 @@
 #!/bin/sh /etc/rc.common
 # Load mt7996e with or without the AN7552 NPU offload as configured, set
-# the 5 GHz BE TXOP for the gaming mode and the TCP MSS on PPPoE links.
+# the 5 GHz BE TXOP for the gaming mode, the TCP MSS on PPPoE links and the
+# Wi-Fi 7 MLO network.
 # At boot this runs before netifd brings Wi-Fi up and before firewall4.
 
 START=19
@@ -8,6 +9,7 @@ USE_PROCD=1
 
 PARAM=/sys/module/mt7996e/parameters/npu_enable
 MSS_NFT=/etc/nftables.d/90-pppoe-mss.nft
+MLO_IFACE=an7552_mlo
 
 # Gaming mode: 2 ms BE TXOP on 5 GHz radios. Off: back to the 16 ms the
 # image sets, unless the TXOP was changed by hand.
@@ -99,20 +101,71 @@ chain pppoe_mss {
 	return 0
 }
 
+# Wi-Fi 7 MLO: one WPA3 wifi-iface over every enabled 2.4 and 5 GHz radio.
+# The section is owned by this script: it is rebuilt from an7552-npu.mlo
+# and removed when MLO is off. Returns 0 when the wireless config changed.
+mlo_apply() {
+	local enabled ssid key network radio radios= n=0 cur new
+
+	config_load an7552-npu
+	config_get_bool enabled mlo enabled 0
+	config_get ssid mlo ssid
+	config_get key mlo key
+	config_get network mlo network lan
+
+	for radio in $(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-device$/\1/p"); do
+		case "$(uci -q get wireless.$radio.band)" in 2g|5g) ;; *) continue;; esac
+		[ "$(uci -q get wireless.$radio.disabled)" = 1 ] && continue
+		radios="$radios $radio"
+		n=$((n + 1))
+	done
+
+	cur=$(uci -q show wireless.$MLO_IFACE)
+	uci -q delete wireless.$MLO_IFACE
+	if [ "$enabled" = 1 ] && [ -n "$ssid" ] && [ ${#key} -ge 8 ] && [ $n -ge 2 ]; then
+		uci set wireless.$MLO_IFACE=wifi-iface
+		for radio in $radios; do
+			uci add_list wireless.$MLO_IFACE.device=$radio
+		done
+		uci set wireless.$MLO_IFACE.mlo=1
+		uci set wireless.$MLO_IFACE.mode=ap
+		uci set wireless.$MLO_IFACE.network="$network"
+		uci set wireless.$MLO_IFACE.ssid="$ssid"
+		uci set wireless.$MLO_IFACE.encryption=sae
+		uci set wireless.$MLO_IFACE.key="$key"
+	elif [ "$enabled" = 1 ]; then
+		logger -t an7552-npu "MLO needs a name, a password of 8+ characters and two radios"
+	fi
+	new=$(uci -q show wireless.$MLO_IFACE)
+	if [ "$cur" = "$new" ]; then
+		uci revert wireless.$MLO_IFACE
+		return 1
+	fi
+	uci commit wireless
+	if [ -n "$new" ]; then
+		logger -t an7552-npu "MLO network $ssid set on$radios"
+	else
+		logger -t an7552-npu "MLO network removed"
+	fi
+	return 0
+}
+
 start_service() {
 	mss_apply
 	txop_apply
+	mlo_apply
 	npu_apply
 }
 
 reload_service() {
-	local txop_changed=
+	local wifi_changed=
 
 	mss_apply && /etc/init.d/firewall reload
-	txop_apply && txop_changed=1
-	# a driver reload restarts Wi-Fi with the new TXOP anyway
+	txop_apply && wifi_changed=1
+	mlo_apply && wifi_changed=1
+	# a driver reload restarts Wi-Fi with the new settings anyway
 	npu_apply && return 0
-	[ -n "$txop_changed" ] && ubus -t 2 list network.wireless >/dev/null 2>&1 && wifi reload
+	[ -n "$wifi_changed" ] && ubus -t 2 list network.wireless >/dev/null 2>&1 && wifi reload
 	return 0
 }
 

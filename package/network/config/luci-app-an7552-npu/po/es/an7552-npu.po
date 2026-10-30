@@ -3,8 +3,8 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: es\n"
 
-msgid "NPU acceleration"
-msgstr "Aceleración NPU"
+msgid "Advanced settings"
+msgstr "Ajustes avanzados"
 
 msgid "Wi-Fi NPU acceleration"
 msgstr "Aceleración de Wi-Fi por NPU"
@@ -54,3 +54,27 @@ msgstr "De 536 a 1460. Las conexiones IPv6 reciben 20 bytes menos."
 
 msgid "off"
 msgstr "desactivado"
+
+msgid "Wi-Fi 7 MLO"
+msgstr "Wi-Fi 7 MLO"
+
+msgid "A separate network for Wi-Fi 7 devices on 2.4 and 5 GHz at once (Multi-Link Operation). Such a device stays connected over both bands and keeps working on 2.4 GHz if 5 GHz drops."
+msgstr "Una red aparte para dispositivos Wi-Fi 7 en 2,4 y 5 GHz a la vez (Multi-Link Operation). Un dispositivo así permanece conectado por ambas bandas y sigue funcionando en 2,4 GHz si se pierde 5 GHz."
+
+msgid "The network uses WPA3 only. Change it here only: the router rebuilds it from these settings and removes it when MLO is off."
+msgstr "La red solo usa WPA3. Cámbiela solo aquí: el router la crea a partir de estos ajustes y la elimina cuando MLO está desactivado."
+
+msgid "Enable MLO network"
+msgstr "Activar la red MLO"
+
+msgid "Network name (SSID)"
+msgstr "Nombre de red (SSID)"
+
+msgid "Expecting: non-empty value"
+msgstr "Se necesita un valor"
+
+msgid "Password"
+msgstr "Contraseña"
+
+msgid "At least 8 characters"
+msgstr "Al menos 8 caracteres"

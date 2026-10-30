@@ -1,6 +1,6 @@
 {
 	"admin/network/an7552-npu": {
-		"title": "NPU acceleration",
+		"title": "Advanced settings",
 		"order": 70,
 		"action": {
 			"type": "view",

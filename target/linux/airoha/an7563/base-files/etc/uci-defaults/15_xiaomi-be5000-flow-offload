@@ -1,0 +1,19 @@
+. /lib/functions.sh
+
+# Routing offload: Wi-Fi <-> WAN goes through the PPE instead of the CPU.
+# The CPU path forwards only ~150-300 Mbit/s of Wi-Fi upload, and under that
+# load the frame engine stalls until a reboot. Only on a router (an access
+# point has no wan) and only once, so that a later choice in LuCI stays.
+[ "$(board_name)" = xiaomi,be5000 ] || exit 0
+[ "$(uci -q get an7552-npu.settings.offload_default)" = 1 ] && exit 0
+uci -q get network.wan >/dev/null || exit 0
+if [ -z "$(uci -q get firewall.@defaults[0].flow_offloading)" ]; then
+	uci set firewall.@defaults[0].flow_offloading=1
+	uci set firewall.@defaults[0].flow_offloading_hw=1
+	uci commit firewall
+fi
+if uci -q get an7552-npu.settings >/dev/null; then
+	uci set an7552-npu.settings.offload_default=1
+	uci commit an7552-npu
+fi
+exit 0

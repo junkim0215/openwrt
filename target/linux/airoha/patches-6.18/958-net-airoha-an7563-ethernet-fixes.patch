@@ -1,0 +1,1341 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: AN7563 ethernet fixes for the Xiaomi BE5000
+
+Transmit:
+- Queue frames asynchronously like the other SoCs. The AN7563 path
+  busy-waited up to 1 ms per frame and cleared TX done queue entries a
+  second time from xmit.
+- Release a TX entry once: skip done reports for entries that are not in
+  flight, clear DONE on release, and wait up to 20 us for a DONE bit that
+  arrives after its report. A second release corrupted q->tx_list and lost
+  an skb and its BQL completion, which stopped a netdev queue for good.
+- Once a second, release TX entries the done queue never reported, when
+  the ring has been idle for a whole second.
+
+Frame engine:
+- Stock PSE buffer setup: 1280 pages of 128 bytes, input queue reserves,
+  share thresholds 500/480, CPU port flow control per port, MBI aging.
+- Stall monitor: when the PSE input queues are full with RX DMA busy, or
+  the PPE output queue stays stuck, recover in place: drop GDM ingress,
+  stop NAPI and DMA, frame engine core reset, QDMA quick reset, program the
+  rings again and restart. With RX DMA wedged no register write is safe,
+  so the monitor reboots instead (airoha_eth.reboot_on_wedge).
+- debugfs airoha_fe_stall: recoveries, PSE events, TX counters.
+
+Shutdown and PPE:
+- Drop GDM ingress and wait for QDMA idle on shutdown, stop the NPU, so a
+  warm reboot does not loop.
+- Do not bind bridged flows to local addresses.
+- Replace a stale flow entry when a flowtable cookie is reused.
+---
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -92,6 +92,10 @@
+ #define REG_FE_VIP_PORT_EN		0x01f0
+ #define REG_FE_IFC_PORT_EN		0x01f4
+ 
++#define REG_PSE_IQ_STA1			(PSE_BASE + 0x10)
++#define REG_PSE_IQ_STA2			(PSE_BASE + 0x14)
++#define REG_PSE_OQ_STA1			(PSE_BASE + 0x18)
++#define REG_PSE_OQ_STA2			(PSE_BASE + 0x1c)
+ #define REG_PSE_IQ_REV1			(PSE_BASE + 0x08)
+ #define PSE_IQ_RES1_P2_MASK		GENMASK(23, 16)
+ 
+@@ -173,6 +177,13 @@
+ #define REG_GDM_TXCHN_EN(_n)		(GDM_BASE(_n) + 0x24)
+ #define REG_GDM_RXCHN_EN(_n)		(GDM_BASE(_n) + 0x28)
+ 
++#define REG_FE_INT_STATUS		0x0008
++#define REG_FE_INT_ENABLE		0x000c
++#define FE_INT_PSE_FC_MASK		GENMASK(5, 0)
++#define FE_INT_PSE_FQ_EMPTY		BIT(8)
++#define FE_INT_PSE_FC_DROP		BIT(9)
++#define FE_INT_PSE_EXCEPTION		BIT(28)
++
+ #define REG_FE_CPORT_CFG		(GDM1_BASE + 0x40)
+ #define FE_CPORT_PAD			BIT(26)
+ #define FE_CPORT_PORT_XFC_MASK		BIT(25)
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -237,6 +237,7 @@
+ 
+ 	int size;
+ 	u32 *q;
++	dma_addr_t dma_addr;
+ };
+ 
+ struct airoha_hw_stats {
+@@ -585,6 +586,10 @@
+ 	struct airoha_queue q_tx[AIROHA_NUM_TX_RING];
+ 	struct airoha_queue q_rx[AIROHA_NUM_RX_RING];
+ 
++	/* AN7563 hw forwarding queue memory, re-programmed on recovery */
++	dma_addr_t hfwd_dscp_dma;
++	dma_addr_t hfwd_buf_dma;
++
+ 	DECLARE_BITMAP(qos_channel_map, AIROHA_NUM_QOS_CHANNELS);
+ };
+ 
+@@ -683,6 +688,33 @@
+ 
+ 	struct airoha_qdma qdma[AIROHA_MAX_NUM_QDMA];
+ 	struct airoha_gdm_port *ports[AIROHA_MAX_NUM_GDM_PORTS];
++
++	/* AN7563 frame engine stall monitor */
++	struct delayed_work stall_work;
++	struct mutex stall_lock;
++	u32 irq_events;
++	u32 irq_events_seen;
++	u32 ppe_oq_pages_seen;
++	int stall_samples;
++	u32 recoveries;
++	bool stall_wedged;
++
++	/* AN7563 PSE events from REG_FE_INT_STATUS, polled by the monitor */
++	u32 pse_fq_empty;
++	u32 pse_fc_drop;
++	u32 pse_fc;
++	u32 pse_exception;
++	/* TX descriptors the done queue never reported, reclaimed later */
++	u32 tx_reclaimed;
++	u32 tx_queued;
++	/* TX done reports for an entry that was not in flight, and reports
++	 * whose descriptor never showed DONE in time
++	 */
++	u32 tx_report_stale;
++	u32 tx_report_late;
++	/* TX ring state at the previous monitor tick */
++	u32 tx_reclaim_cpu;
++	u32 tx_reclaim_queued;
+ };
+ 
+ u32 airoha_rr(void __iomem *base, u32 offset);
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -3,11 +3,13 @@
+  * Copyright (c) 2024 AIROHA Inc
+  * Author: Lorenzo Bianconi <lorenzo@kernel.org>
+  */
++#include <linux/debugfs.h>
+ #include <linux/of.h>
+ #include <linux/of_net.h>
+ #include <linux/of_reserved_mem.h>
+ #include <linux/mfd/syscon.h>
+ #include <linux/platform_device.h>
++#include <linux/reboot.h>
+ #include <linux/regmap.h>
+ #include <linux/tcp.h>
+ #include <linux/pcs/pcs.h>
+@@ -591,12 +593,113 @@
+ 	airoha_fe_lro_disable(eth, qdma_id);
+ }
+ 
++/* The AN7563 PSE comes up with 1024 64-byte pages and shared-pool
++ * thresholds above the shared pool itself, so under CPU-forwarded load the
++ * page pool runs dry and the frame engine deadlocks. The stock driver
++ * (fe_core.ko init_module: pse_page_set_to_128Byte, pse_set_total_page,
++ * setup_pse_IQ_reservation, pse_set_share_threshold) gives the PSE
++ * 128-byte pages, the GDMP SRAM as 256 extra pages (1280 in all), the
++ * input-queue reserves and fixed shared-pool thresholds. Do the same.
++ */
++#define AN7563_GDMP_BASE			0x1fbf9000
++#define AN7563_GDMP_SIZE			0x84
++#define AN7563_GDMP_DATA_SEL			0x74
++#define AN7563_GDMP_DATA_SEL_MASK		GENMASK(1, 0)
++#define AN7563_GDMP_DATA_SEL_FE			3
++#define AN7563_SCU_SSR3				0x94
++#define AN7563_SCU_SSR3_PCIE_HSGMII1_SEL	BIT(30)
++#define AN7563_PSE_FQ_PAGES			0x500
++#define AN7563_PSE_SHARE_USED_HTHD		500
++#define AN7563_PSE_SHARE_USED_MTHD		480
++
++static int airoha_fe_an7563_pse_init(struct airoha_eth *eth)
++{
++	void __iomem *gdmp;
++	struct regmap *scu;
++	u32 val;
++
++	/* PSE page 128 B, as airoha_fe_init() sets for the other SoCs */
++	airoha_fe_rmw(eth, REG_FE_DMA_GLO_CFG,
++		      FE_DMA_GLO_L2_SPACE_MASK | FE_DMA_GLO_PG_SZ_MASK,
++		      FIELD_PREP(FE_DMA_GLO_L2_SPACE_MASK, 2) |
++		      FE_DMA_GLO_PG_SZ_MASK);
++
++	/* hand the GDMP SRAM to the frame engine (stock gdump_mode_sel(3)) */
++	gdmp = ioremap(AN7563_GDMP_BASE, AN7563_GDMP_SIZE);
++	if (!gdmp) {
++		dev_err(eth->dev, "cannot map the GDMP block\n");
++		return -ENOMEM;
++	}
++	val = readl(gdmp + AN7563_GDMP_DATA_SEL);
++	val &= ~AN7563_GDMP_DATA_SEL_MASK;
++	val |= FIELD_PREP(AN7563_GDMP_DATA_SEL_MASK, AN7563_GDMP_DATA_SEL_FE);
++	writel(val, gdmp + AN7563_GDMP_DATA_SEL);
++	iounmap(gdmp);
++
++	/* the stock driver changes this clock select along with it */
++	scu = syscon_regmap_lookup_by_compatible("airoha,an7563-scu");
++	if (IS_ERR(scu)) {
++		dev_err(eth->dev, "cannot get the SCU: %ld\n", PTR_ERR(scu));
++		return PTR_ERR(scu);
++	}
++	regmap_clear_bits(scu, AN7563_SCU_SSR3,
++			  AN7563_SCU_SSR3_PCIE_HSGMII1_SEL);
++
++	airoha_fe_rmw(eth, PSE_FQ_CFG, PSE_FQ_LIMIT_MASK,
++		      FIELD_PREP(PSE_FQ_LIMIT_MASK, AN7563_PSE_FQ_PAGES));
++
++	/* PSE IQ reserve, the same values as for the other SoCs */
++	airoha_fe_rmw(eth, REG_PSE_IQ_REV1, PSE_IQ_RES1_P2_MASK,
++		      FIELD_PREP(PSE_IQ_RES1_P2_MASK, 0x10));
++	airoha_fe_rmw(eth, REG_PSE_IQ_REV2,
++		      PSE_IQ_RES2_P5_MASK | PSE_IQ_RES2_P4_MASK,
++		      FIELD_PREP(PSE_IQ_RES2_P5_MASK, 0x40) |
++		      FIELD_PREP(PSE_IQ_RES2_P4_MASK, 0x34));
++
++	/* shared-pool thresholds, the stock constants */
++	airoha_fe_wr(eth, REG_PSE_SHARE_USED_THD,
++		     FIELD_PREP(PSE_SHARE_USED_MTHD_MASK,
++				AN7563_PSE_SHARE_USED_MTHD) |
++		     FIELD_PREP(PSE_SHARE_USED_HTHD_MASK,
++				AN7563_PSE_SHARE_USED_HTHD));
++
++	/* the rest of the stock fe_core init: CPU port flow control per
++	 * port instead of per queue, MBI aging on GDM1/GDM2 (the vendor's
++	 * workaround for a stuck GDM channel), PSE error events latched in
++	 * REG_FE_INT_STATUS (polled by the stall monitor, no interrupt)
++	 */
++	airoha_fe_clear(eth, REG_FE_CPORT_CFG, FE_CPORT_QUEUE_XFC_MASK);
++	airoha_fe_set(eth, REG_FE_CPORT_CFG, FE_CPORT_PORT_XFC_MASK);
++	airoha_fe_rmw(eth, REG_GDM_CHN_RLS(1),
++		      MBI_RX_AGE_SEL_MASK | MBI_TX_AGE_SEL_MASK,
++		      FIELD_PREP(MBI_RX_AGE_SEL_MASK, 3) |
++		      FIELD_PREP(MBI_TX_AGE_SEL_MASK, 3));
++	airoha_fe_rmw(eth, REG_GDM_CHN_RLS(2),
++		      MBI_RX_AGE_SEL_MASK | MBI_TX_AGE_SEL_MASK,
++		      FIELD_PREP(MBI_RX_AGE_SEL_MASK, 3) |
++		      FIELD_PREP(MBI_TX_AGE_SEL_MASK, 3));
++	airoha_fe_wr(eth, REG_FE_INT_STATUS, 0xffffffff);
++
++	/* a frame engine core reset makes the page setup effective */
++	airoha_fe_wr(eth, REG_FE_RST_GLO_CFG, FE_RST_CORE_MASK);
++	usleep_range(1000, 2000);
++
++	dev_info(eth->dev,
++		 "PSE: %u pages, glo %08x, rsv %08x, thresholds %08x\n",
++		 (u32)airoha_fe_get(eth, PSE_FQ_CFG, PSE_FQ_LIMIT_MASK),
++		 airoha_fe_rr(eth, REG_FE_DMA_GLO_CFG),
++		 airoha_fe_rr(eth, REG_FE_PSE_BUF_SET),
++		 airoha_fe_rr(eth, REG_PSE_SHARE_USED_THD));
++
++	return 0;
++}
++
+ static int airoha_fe_init(struct airoha_eth *eth)
+ {
+ 	airoha_fe_maccr_init(eth);
+ 
+ 	if (eth->soc->version == 0x7563)
+-		return 0;
++		return airoha_fe_an7563_pse_init(eth);
+ 
+ 	/* PSE IQ reserve */
+ 	airoha_fe_rmw(eth, REG_PSE_IQ_REV1, PSE_IQ_RES1_P2_MASK,
+@@ -1047,6 +1150,36 @@
+ 	return done;
+ }
+ 
++/* Program the QDMA RX ring registers from the software state; also run
++ * after a QDMA reset.
++ */
++static void airoha_qdma_rx_queue_hw_init(struct airoha_queue *q)
++{
++	struct airoha_qdma *qdma = q->qdma;
++	int qid = q - &qdma->q_rx[0], thr;
++
++	airoha_qdma_wr(qdma, REG_RX_RING_BASE(qid), q->desc_dma);
++	airoha_qdma_rmw(qdma, REG_RX_RING_SIZE(qid),
++			RX_RING_SIZE_MASK,
++			FIELD_PREP(RX_RING_SIZE_MASK, q->ndesc));
++
++	thr = clamp(q->ndesc >> 3, 1, 32);
++	airoha_qdma_rmw(qdma, REG_RX_RING_SIZE(qid), RX_RING_THR_MASK,
++			FIELD_PREP(RX_RING_THR_MASK, thr));
++	airoha_qdma_rmw(qdma, REG_RX_DMA_IDX(qid), RX_RING_DMA_IDX_MASK,
++			FIELD_PREP(RX_RING_DMA_IDX_MASK, q->head));
++	/* With scatter-gather the AN7563 QDMA splits frames at 1 KiB and
++	 * shifts the first buffer by two bytes; its buffers fit a full
++	 * frame anyway.
++	 */
++	if (airoha_qdma_is_lro_queue(q) || qdma->eth->soc->version == 0x7563)
++		airoha_qdma_clear(qdma, REG_RX_SCATTER_CFG(qid),
++				  RX_RING_SG_EN_MASK);
++	else
++		airoha_qdma_set(qdma, REG_RX_SCATTER_CFG(qid),
++				RX_RING_SG_EN_MASK);
++}
++
+ static int airoha_qdma_init_rx_queue(struct airoha_queue *q,
+ 				     struct airoha_qdma *qdma, int ndesc)
+ {
+@@ -1059,7 +1192,6 @@
+ 		.napi = &q->napi,
+ 	};
+ 	struct airoha_eth *eth = qdma->eth;
+-	int qid = q - &qdma->q_rx[0], thr;
+ 	dma_addr_t dma_addr;
+ 	bool lro_q;
+ 
+@@ -1089,29 +1221,10 @@
+ 
+ 	q->buf_size = lro_q ? pp_params.max_len : pp_params.max_len / 2;
+ 	q->ndesc = ndesc;
++	q->desc_dma = dma_addr;
+ 	netif_napi_add(eth->napi_dev, &q->napi, airoha_qdma_rx_napi_poll);
+ 
+-	airoha_qdma_wr(qdma, REG_RX_RING_BASE(qid), dma_addr);
+-	airoha_qdma_rmw(qdma, REG_RX_RING_SIZE(qid),
+-			RX_RING_SIZE_MASK,
+-			FIELD_PREP(RX_RING_SIZE_MASK, ndesc));
+-
+-	thr = clamp(ndesc >> 3, 1, 32);
+-	airoha_qdma_rmw(qdma, REG_RX_RING_SIZE(qid), RX_RING_THR_MASK,
+-			FIELD_PREP(RX_RING_THR_MASK, thr));
+-	airoha_qdma_rmw(qdma, REG_RX_DMA_IDX(qid), RX_RING_DMA_IDX_MASK,
+-			FIELD_PREP(RX_RING_DMA_IDX_MASK, q->head));
+-	/* With scatter-gather the AN7563 QDMA splits frames at 1 KiB and
+-	 * shifts the first buffer by two bytes; its buffers fit a full
+-	 * frame anyway.
+-	 */
+-	if (lro_q || qdma->eth->soc->version == 0x7563)
+-		airoha_qdma_clear(qdma, REG_RX_SCATTER_CFG(qid),
+-				  RX_RING_SG_EN_MASK);
+-	else
+-		airoha_qdma_set(qdma, REG_RX_SCATTER_CFG(qid),
+-				RX_RING_SG_EN_MASK);
+-
++	airoha_qdma_rx_queue_hw_init(q);
+ 	airoha_qdma_fill_rx_queue(q);
+ 
+ 	return 0;
+@@ -1283,19 +1396,52 @@
+ 			goto unlock;
+ 
+ 		desc = &q->desc[index];
+-		desc_ctrl = le32_to_cpu(desc->ctrl);
++		e = &q->entry[index];
++
++		/* A report for an entry that is not in flight (already
++		 * released, or never queued) must not release it again: a
++		 * second list_add_tail() corrupts q->tx_list, q->queued drops
++		 * below the real count and the same entry later goes to two
++		 * frames, losing one skb and its BQL completion.
++		 */
++		if (e->dma_type == AIROHA_DMA_UNMAPPED) {
++			eth->tx_report_stale++;
++			goto unlock;
++		}
++
++		/* On AN7563 the report can arrive before the descriptor write
++		 * back: give DONE a few microseconds instead of dropping the
++		 * report, which would leave the entry in flight for good.
++		 */
++		desc_ctrl = le32_to_cpu(READ_ONCE(desc->ctrl));
++		if (!(desc_ctrl & (QDMA_DESC_DONE_MASK | QDMA_DESC_DROP_MASK)) &&
++		    eth->soc->version == 0x7563) {
++			int try;
++
++			for (try = 0; try < 20; try++) {
++				udelay(1);
++				dma_rmb();
++				desc_ctrl = le32_to_cpu(READ_ONCE(desc->ctrl));
++				if (desc_ctrl & (QDMA_DESC_DONE_MASK |
++						 QDMA_DESC_DROP_MASK))
++					break;
++			}
++		}
+ 
+ 		if (!(desc_ctrl & QDMA_DESC_DONE_MASK) &&
+-		    !(desc_ctrl & QDMA_DESC_DROP_MASK))
++		    !(desc_ctrl & QDMA_DESC_DROP_MASK)) {
++			eth->tx_report_late++;
+ 			goto unlock;
++		}
+ 
+-		e = &q->entry[index];
+ 		skb = e->skb;
+ 		e->skb = NULL;
+ 
+ 		airoha_unmap_xmit_buf(eth, e);
+ 		list_add_tail(&e->list, &q->tx_list);
+ 
++		/* no stale DONE for a later report of this slot */
++		WRITE_ONCE(desc->ctrl, 0);
+ 		WRITE_ONCE(desc->msg0, 0);
+ 		WRITE_ONCE(desc->msg1, 0);
+ 		q->queued--;
+@@ -1347,12 +1493,35 @@
+ 	return done;
+ }
+ 
++/* Program the QDMA TX ring registers; @index is the next descriptor the
++ * CPU will use. Also run after a QDMA reset.
++ */
++static void airoha_qdma_tx_queue_hw_init(struct airoha_queue *q, u16 index)
++{
++	struct airoha_qdma *qdma = q->qdma;
++	int qid = q - &qdma->q_tx[0];
++
++	/* xmit ring drop default setting */
++	airoha_qdma_set(qdma, REG_TX_RING_BLOCKING(qid),
++			TX_RING_IRQ_BLOCKING_TX_DROP_EN_MASK);
++	if (qdma->eth->soc->version == 0x7563)
++		airoha_qdma_clear(qdma, REG_TX_RING_BLOCKING(qid),
++				  TX_RING_IRQ_BLOCKING_TX_DROP_EN_MASK |
++				  TX_RING_IRQ_BLOCKING_CFG_MASK);
++
++	airoha_qdma_wr(qdma, REG_TX_RING_BASE(qid), q->desc_dma);
++	airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid), TX_RING_CPU_IDX_MASK,
++			FIELD_PREP(TX_RING_CPU_IDX_MASK, index));
++	airoha_qdma_rmw(qdma, REG_TX_DMA_IDX(qid), TX_RING_DMA_IDX_MASK,
++			FIELD_PREP(TX_RING_DMA_IDX_MASK, index));
++}
++
+ static int airoha_qdma_init_tx_queue(struct airoha_queue *q,
+ 				     struct airoha_qdma *qdma, int size)
+ {
+ 	struct airoha_eth *eth = qdma->eth;
+-	int i, qid = q - &qdma->q_tx[0];
+ 	dma_addr_t dma_addr;
++	int i;
+ 
+ 	spin_lock_init(&q->lock);
+ 	q->qdma = qdma;
+@@ -1376,36 +1545,39 @@
+ 		WRITE_ONCE(q->desc[i].ctrl, cpu_to_le32(val));
+ 	}
+ 	q->ndesc = size;
+-
+-	/* xmit ring drop default setting */
+-	airoha_qdma_set(qdma, REG_TX_RING_BLOCKING(qid),
+-			TX_RING_IRQ_BLOCKING_TX_DROP_EN_MASK);
++	q->desc_dma = dma_addr;
+ 
+ 	if (eth->soc->version == 0x7563) {
+-		q->desc_dma = dma_addr;
+-
+ 		memset(q->desc, 0, size * sizeof(*q->desc));
+ 		dma_sync_single_for_device(eth->dev, q->desc_dma,
+ 					   size * sizeof(*q->desc), DMA_TO_DEVICE);
+-
+-		airoha_qdma_clear(qdma, REG_TX_RING_BLOCKING(qid),
+-				  TX_RING_IRQ_BLOCKING_TX_DROP_EN_MASK |
+-				  TX_RING_IRQ_BLOCKING_CFG_MASK);
+ 	}
+ 
+-	airoha_qdma_wr(qdma, REG_TX_RING_BASE(qid), dma_addr);
+-	airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid), TX_RING_CPU_IDX_MASK,
+-			FIELD_PREP(TX_RING_CPU_IDX_MASK, 0));
+-	airoha_qdma_rmw(qdma, REG_TX_DMA_IDX(qid), TX_RING_DMA_IDX_MASK,
+-			FIELD_PREP(TX_RING_DMA_IDX_MASK, 0));
++	airoha_qdma_tx_queue_hw_init(q, 0);
+ 
+ 	return 0;
+ }
+ 
++/* Empty the TX done queue and program its registers; also run after a
++ * QDMA reset.
++ */
++static void airoha_qdma_tx_irq_hw_init(struct airoha_tx_irq_queue *irq_q)
++{
++	struct airoha_qdma *qdma = irq_q->qdma;
++	int id = irq_q - &qdma->q_tx_irq[0];
++
++	memset(irq_q->q, 0xff, irq_q->size * sizeof(u32));
++
++	airoha_qdma_wr(qdma, REG_TX_IRQ_BASE(id), irq_q->dma_addr);
++	airoha_qdma_rmw(qdma, REG_TX_IRQ_CFG(id), TX_IRQ_DEPTH_MASK,
++			FIELD_PREP(TX_IRQ_DEPTH_MASK, irq_q->size));
++	airoha_qdma_rmw(qdma, REG_TX_IRQ_CFG(id), TX_IRQ_THR_MASK,
++			FIELD_PREP(TX_IRQ_THR_MASK, 1));
++}
++
+ static int airoha_qdma_tx_irq_init(struct airoha_tx_irq_queue *irq_q,
+ 				   struct airoha_qdma *qdma, int size)
+ {
+-	int id = irq_q - &qdma->q_tx_irq[0];
+ 	struct airoha_eth *eth = qdma->eth;
+ 	dma_addr_t dma_addr;
+ 
+@@ -1414,18 +1586,14 @@
+ 	if (!irq_q->q)
+ 		return -ENOMEM;
+ 
+-	memset(irq_q->q, 0xff, size * sizeof(u32));
+ 	irq_q->size = size;
+ 	irq_q->qdma = qdma;
++	irq_q->dma_addr = dma_addr;
+ 
+ 	netif_napi_add_tx(eth->napi_dev, &irq_q->napi,
+ 			  airoha_qdma_tx_napi_poll);
+ 
+-	airoha_qdma_wr(qdma, REG_TX_IRQ_BASE(id), dma_addr);
+-	airoha_qdma_rmw(qdma, REG_TX_IRQ_CFG(id), TX_IRQ_DEPTH_MASK,
+-			FIELD_PREP(TX_IRQ_DEPTH_MASK, size));
+-	airoha_qdma_rmw(qdma, REG_TX_IRQ_CFG(id), TX_IRQ_THR_MASK,
+-			FIELD_PREP(TX_IRQ_THR_MASK, 1));
++	airoha_qdma_tx_irq_hw_init(irq_q);
+ 
+ 	return 0;
+ }
+@@ -1521,6 +1689,35 @@
+ 	}
+ }
+ 
++#define AIROHA_AN7563_HW_DSCP_NUM	32
++
++/* Program the AN7563 hw forwarding queue registers; also run after a QDMA
++ * reset.
++ */
++static int airoha_qdma_an7563_hfwd_hw_init(struct airoha_qdma *qdma)
++{
++	u32 status;
++
++	airoha_qdma_wr(qdma, REG_FWD_DSCP_BASE, qdma->hfwd_dscp_dma);
++	airoha_qdma_wr(qdma, REG_FWD_BUF_BASE, qdma->hfwd_buf_dma);
++	airoha_qdma_rmw(qdma, REG_HW_FWD_DSCP_CFG,
++			HW_FWD_DSCP_PAYLOAD_SIZE_MASK |
++			HW_FWD_DSCP_MIN_SCATTER_LEN_MASK,
++			FIELD_PREP(HW_FWD_DSCP_PAYLOAD_SIZE_MASK, 0) |
++			FIELD_PREP(HW_FWD_DSCP_MIN_SCATTER_LEN_MASK, 1));
++	airoha_qdma_rmw(qdma, REG_LMGR_INIT_CFG,
++			LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
++			HW_FWD_DESC_NUM_MASK,
++			FIELD_PREP(HW_FWD_DESC_NUM_MASK,
++				   AIROHA_AN7563_HW_DSCP_NUM) |
++			LMGR_INIT_START);
++
++	return read_poll_timeout(airoha_qdma_rr, status,
++				 !(status & LMGR_INIT_START),
++				 USEC_PER_MSEC, 30 * USEC_PER_MSEC,
++				 true, qdma, REG_LMGR_INIT_CFG);
++}
++
+ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
+ {
+ 	int size, index, num_desc = HW_DSCP_NUM;
+@@ -1532,7 +1729,7 @@
+ 	const char *name;
+ 
+ 	if (eth->soc->version == 0x7563) {
+-		num_desc = 32;
++		num_desc = AIROHA_AN7563_HW_DSCP_NUM;
+ 
+ 		size = num_desc * sizeof(struct airoha_qdma_fwd_desc);
+ 		buf = dmam_alloc_coherent(eth->dev, size, &dma_addr,
+@@ -1543,7 +1740,7 @@
+ 		memset(buf, 0, size);
+ 		dma_sync_single_for_device(eth->dev, dma_addr, size,
+ 					   DMA_TO_DEVICE);
+-		airoha_qdma_wr(qdma, REG_FWD_DSCP_BASE, dma_addr);
++		qdma->hfwd_dscp_dma = dma_addr;
+ 
+ 		size = AIROHA_MAX_PACKET_SIZE * num_desc;
+ 		buf = dmam_alloc_coherent(eth->dev, size, &dma_addr,
+@@ -1554,23 +1751,9 @@
+ 		memset(buf, 0, size);
+ 		dma_sync_single_for_device(eth->dev, dma_addr, size,
+ 					   DMA_TO_DEVICE);
+-		airoha_qdma_wr(qdma, REG_FWD_BUF_BASE, dma_addr);
++		qdma->hfwd_buf_dma = dma_addr;
+ 
+-		airoha_qdma_rmw(qdma, REG_HW_FWD_DSCP_CFG,
+-				HW_FWD_DSCP_PAYLOAD_SIZE_MASK |
+-				HW_FWD_DSCP_MIN_SCATTER_LEN_MASK,
+-				FIELD_PREP(HW_FWD_DSCP_PAYLOAD_SIZE_MASK, 0) |
+-				FIELD_PREP(HW_FWD_DSCP_MIN_SCATTER_LEN_MASK, 1));
+-		airoha_qdma_rmw(qdma, REG_LMGR_INIT_CFG,
+-				LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
+-				HW_FWD_DESC_NUM_MASK,
+-				FIELD_PREP(HW_FWD_DESC_NUM_MASK, num_desc) |
+-				LMGR_INIT_START);
+-
+-		return read_poll_timeout(airoha_qdma_rr, status,
+-					 !(status & LMGR_INIT_START),
+-					 USEC_PER_MSEC, 30 * USEC_PER_MSEC,
+-					 true, qdma, REG_LMGR_INIT_CFG);
++		return airoha_qdma_an7563_hfwd_hw_init(qdma);
+ 	}
+ 
+ 	name = devm_kasprintf(eth->dev, GFP_KERNEL, "qdma%d-buf", id);
+@@ -1803,6 +1986,7 @@
+ 	u32 intr[ARRAY_SIZE(irq_bank->irqmask)];
+ 	int i;
+ 
++	qdma->eth->irq_events++;
+ 	for (i = 0; i < ARRAY_SIZE(intr); i++) {
+ 		intr[i] = airoha_qdma_rr(qdma, REG_INT_STATUS(i));
+ 		intr[i] &= irq_bank->irqmask[i];
+@@ -2064,6 +2248,437 @@
+ 	}
+ }
+ 
++/* AN7563 frame engine stall monitor.
++ *
++ * Under CPU-forwarded load the AN7563 frame engine occasionally stops: the
++ * PSE input queues stay full, the QDMA keeps RX_DMA_BUSY set and never
++ * raises an interrupt again, and the only way back is a reset. The vendor
++ * driver (fe_core.ko, fe_monitor) polls the PSE input queue page counters
++ * every second and runs a PSE/QDMA recovery when their sum exceeds 0xa0.
++ * Do the same here, additionally requiring that the QDMA reports its RX
++ * DMA busy and that no QDMA interrupt arrived during the sample, so that a
++ * merely busy frame engine is left alone. The frame engine also dies in a
++ * second way: the PSE input queues stay empty, a few interrupts per second
++ * still arrive, but the PSE output queue towards PPE1 (every ingress frame
++ * goes through it) keeps the same non-zero page count for seconds, as the
++ * PPE no longer takes anything. Treat a frozen non-zero PPE1 output queue
++ * as a stall as well. Both need an open port, since frames park in the PSE
++ * before the ports come up.
++ */
++#define AIROHA_AN7563_PSE_IQ_STALL_PAGES	0xa0
++#define AIROHA_AN7563_PSE_OQ_STUCK_PAGES	8
++#define AIROHA_AN7563_STALL_SAMPLES		3
++
++/* When the QDMA RX DMA is wedged in a transaction the QDMA refuses to
++ * reset and any further register access may hang the bus; the only way
++ * out is a reboot, which at least brings the router back by itself.
++ */
++static bool airoha_an7563_reboot_on_wedge = true;
++module_param_named(reboot_on_wedge, airoha_an7563_reboot_on_wedge, bool, 0644);
++MODULE_PARM_DESC(reboot_on_wedge,
++		 "AN7563: reboot when the frame engine cannot be recovered (default: yes)");
++
++static u32 airoha_an7563_pse_iq_pages(struct airoha_eth *eth)
++{
++	u32 sta1 = airoha_fe_rr(eth, REG_PSE_IQ_STA1);
++	u32 sta2 = airoha_fe_rr(eth, REG_PSE_IQ_STA2);
++
++	return (sta1 & 0xff) + ((sta1 >> 8) & 0xff) + ((sta1 >> 16) & 0xff) +
++	       (sta1 >> 24) + (sta2 & 0xff) + ((sta2 >> 8) & 0xff) +
++	       ((sta2 >> 16) & 0xff);
++}
++
++static bool airoha_an7563_ports_open(struct airoha_eth *eth)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
++		if (eth->ports[i] && eth->ports[i]->users)
++			return true;
++	}
++
++	return false;
++}
++
++static void airoha_an7563_netdevs_tx(struct airoha_eth *eth, bool enable)
++{
++	int i, j;
++
++	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
++		struct airoha_gdm_port *port = eth->ports[i];
++
++		if (!port)
++			continue;
++
++		for (j = 0; j < ARRAY_SIZE(port->devs); j++) {
++			struct net_device *netdev;
++
++			if (!port->devs[j])
++				continue;
++
++			netdev = netdev_from_priv(port->devs[j]);
++			if (!netif_running(netdev))
++				continue;
++
++			if (enable)
++				netif_tx_wake_all_queues(netdev);
++			else
++				netif_tx_disable(netdev);
++		}
++	}
++}
++
++/* Vendor-style datapath recovery: stop ingress and the CPU side, reset the
++ * frame engine core and the QDMA, program every ring again from the
++ * software state (no memory is reallocated) and restart.
++ */
++static void airoha_an7563_fe_recover(struct airoha_eth *eth, const char *why)
++{
++	struct airoha_qdma *qdma = &eth->qdma[0];
++	u32 fwd_cfg[AIROHA_GDM4_IDX + 1];
++	u32 status;
++	int i, err;
++
++	mutex_lock(&eth->stall_lock);
++	if (eth->stall_wedged) {
++		mutex_unlock(&eth->stall_lock);
++		return;
++	}
++
++	status = airoha_qdma_rr(qdma, REG_QDMA_GLOBAL_CFG);
++	dev_warn(eth->dev,
++		 "frame engine stall (%s): PSE IQ %08x %08x OQ %08x %08x QDMA %08x\n",
++		 why, airoha_fe_rr(eth, REG_PSE_IQ_STA1),
++		 airoha_fe_rr(eth, REG_PSE_IQ_STA2),
++		 airoha_fe_rr(eth, REG_PSE_OQ_STA1),
++		 airoha_fe_rr(eth, REG_PSE_OQ_STA2), status);
++
++	/* With the RX DMA wedged in a transaction the QDMA cannot be reset
++	 * and the recovery writes below hang the bus; do not touch it.
++	 */
++	if (status & GLOBAL_CFG_RX_DMA_BUSY_MASK) {
++		dev_err(eth->dev,
++			"the QDMA RX DMA is wedged, no recovery possible: %s\n",
++			airoha_an7563_reboot_on_wedge ? "rebooting" : "giving up");
++		eth->stall_wedged = true;
++		mutex_unlock(&eth->stall_lock);
++		if (airoha_an7563_reboot_on_wedge)
++			orderly_reboot();
++		return;
++	}
++	dev_info(eth->dev, "recovering the frame engine\n");
++
++	/* no new frames from the stack or the GDM ports */
++	airoha_an7563_netdevs_tx(eth, false);
++	for (i = AIROHA_GDM1_IDX; i <= AIROHA_GDM4_IDX; i++) {
++		fwd_cfg[i] = airoha_fe_rr(eth, REG_GDM_FWD_CFG(i));
++		airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(i),
++					    FE_PSE_PORT_DROP);
++	}
++	msleep(100);
++
++	airoha_qdma_stop_napi(qdma);
++
++	/* stop the DMA; it stays busy on a stalled frame engine */
++	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
++			  GLOBAL_CFG_TX_DMA_EN_MASK | GLOBAL_CFG_RX_DMA_EN_MASK);
++	read_poll_timeout(airoha_qdma_rr, status,
++			  !(status & (GLOBAL_CFG_TX_DMA_BUSY_MASK |
++				      GLOBAL_CFG_RX_DMA_BUSY_MASK)),
++			  USEC_PER_MSEC, 50 * USEC_PER_MSEC, true, qdma,
++			  REG_QDMA_GLOBAL_CFG);
++
++	/* frame engine core reset, then QDMA reset */
++	airoha_fe_set(eth, REG_FE_RST_GLO_CFG, FE_RST_CORE_MASK);
++	usleep_range(1000, 2000);
++
++	airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG, GLOBAL_CFG_RESET_MASK);
++	if (read_poll_timeout(airoha_qdma_rr, status,
++			      status & GLOBAL_CFG_RESET_DONE_MASK,
++			      USEC_PER_MSEC, 50 * USEC_PER_MSEC, true, qdma,
++			      REG_QDMA_GLOBAL_CFG)) {
++		airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
++				  GLOBAL_CFG_RESET_MASK);
++		dev_err(eth->dev,
++			"QDMA reset not confirmed (%08x): the RX DMA is wedged, %s\n",
++			status, airoha_an7563_reboot_on_wedge ? "rebooting" :
++			"giving up");
++		eth->stall_wedged = true;
++		mutex_unlock(&eth->stall_lock);
++		if (airoha_an7563_reboot_on_wedge)
++			orderly_reboot();
++		return;
++	}
++	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG, GLOBAL_CFG_RESET_MASK);
++	usleep_range(1000, 2000);
++
++	/* release everything in flight and program the rings again */
++	airoha_qdma_tx_cleanup(qdma);
++	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
++		struct airoha_queue *q = &qdma->q_tx[i];
++		u16 index = 0;
++
++		if (!q->ndesc)
++			continue;
++
++		spin_lock_bh(&q->lock);
++		if (!list_empty(&q->tx_list))
++			index = list_first_entry(&q->tx_list,
++						 struct airoha_queue_entry,
++						 list) - q->entry;
++		q->head = index;
++		q->flushing = false;
++		q->txq_stopped = false;
++		airoha_qdma_tx_queue_hw_init(q, index);
++		spin_unlock_bh(&q->lock);
++	}
++
++	for (i = 0; i < ARRAY_SIZE(qdma->q_tx_irq); i++) {
++		if (qdma->q_tx_irq[i].size)
++			airoha_qdma_tx_irq_hw_init(&qdma->q_tx_irq[i]);
++	}
++
++	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
++		struct airoha_queue *q = &qdma->q_rx[i];
++
++		if (!q->ndesc)
++			continue;
++
++		airoha_qdma_cleanup_rx_queue(q);
++		airoha_qdma_rx_queue_hw_init(q);
++		airoha_qdma_fill_rx_queue(q);
++	}
++
++	err = airoha_qdma_an7563_hfwd_hw_init(qdma);
++	if (err)
++		dev_warn(eth->dev, "hw forwarding queue init failed: %d\n", err);
++	airoha_qdma_hw_init(qdma);
++
++	/* restart */
++	airoha_qdma_start_napi(qdma);
++	airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG,
++			GLOBAL_CFG_TX_DMA_EN_MASK | GLOBAL_CFG_RX_DMA_EN_MASK);
++	for (i = AIROHA_GDM1_IDX; i <= AIROHA_GDM4_IDX; i++)
++		airoha_fe_wr(eth, REG_GDM_FWD_CFG(i), fwd_cfg[i]);
++	airoha_an7563_netdevs_tx(eth, true);
++
++	eth->recoveries++;
++	eth->irq_events_seen = eth->irq_events;
++	eth->ppe_oq_pages_seen = 0;
++	eth->stall_samples = 0;
++	dev_info(eth->dev, "frame engine recovered (%u so far): PSE IQ %08x %08x QDMA %08x\n",
++		 eth->recoveries, airoha_fe_rr(eth, REG_PSE_IQ_STA1),
++		 airoha_fe_rr(eth, REG_PSE_IQ_STA2),
++		 airoha_qdma_rr(qdma, REG_QDMA_GLOBAL_CFG));
++
++	mutex_unlock(&eth->stall_lock);
++}
++
++/* The TX done queue occasionally reports a descriptor before its DONE bit
++ * is visible; airoha_qdma_tx_napi_poll() then consumes the report without
++ * releasing the descriptor, and every such loss leaves q->queued one higher.
++ * After a few thousand losses the driver sees the ring as full, stops the
++ * netdev queues for good and transmits nothing while the hardware ring is
++ * idle. Release such descriptors here: every in-flight entry whose DONE bit
++ * is set, or all of them when the hardware has consumed the whole ring
++ * (CPU index == DMA index).
++ */
++static void airoha_an7563_tx_reclaim(struct airoha_eth *eth)
++{
++	struct airoha_qdma *qdma = &eth->qdma[0];
++	struct airoha_queue *q = &qdma->q_tx[0];
++	u32 cpu, dma, n = 0;
++	bool idle, settled;
++	int i;
++
++	if (!q->ndesc)
++		return;
++
++	spin_lock_bh(&q->lock);
++
++	cpu = FIELD_GET(TX_RING_CPU_IDX_MASK,
++			airoha_qdma_rr(qdma, REG_TX_CPU_IDX(0)));
++	dma = FIELD_GET(TX_RING_DMA_IDX_MASK,
++			airoha_qdma_rr(qdma, REG_TX_DMA_IDX(0)));
++	idle = cpu == dma;
++
++	/* airoha_qdma_tx_napi_poll() normally releases every entry; only
++	 * entries still in flight a whole tick after the hardware went idle,
++	 * with nothing queued in between, are lost
++	 */
++	settled = idle && q->queued && cpu == eth->tx_reclaim_cpu &&
++		  q->queued == eth->tx_reclaim_queued;
++	eth->tx_reclaim_cpu = cpu;
++	eth->tx_reclaim_queued = q->queued;
++
++	for (i = 0; settled && i < q->ndesc && q->queued; i++) {
++		struct airoha_queue_entry *e = &q->entry[i];
++		struct airoha_qdma_desc *desc = &q->desc[i];
++		struct sk_buff *skb = e->skb;
++
++		if (e->dma_type == AIROHA_DMA_UNMAPPED)
++			continue;
++
++		/* a stale done-queue report for this entry is skipped by
++		 * airoha_qdma_tx_napi_poll() as the DONE bit is gone
++		 */
++		WRITE_ONCE(desc->ctrl, 0);
++		e->skb = NULL;
++		airoha_unmap_xmit_buf(eth, e);
++		list_add_tail(&e->list, &q->tx_list);
++		WRITE_ONCE(desc->msg0, 0);
++		WRITE_ONCE(desc->msg1, 0);
++		q->queued--;
++		n++;
++
++		if (skb) {
++			struct airoha_gdm_dev *dev = netdev_priv(skb->dev);
++			u16 qidx = skb_get_queue_mapping(skb);
++			struct netdev_queue *txq;
++
++			txq = skb_get_tx_queue(skb->dev, skb);
++			spin_lock_bh(&dev->txq_lock[qidx]);
++			netdev_tx_completed_queue(txq, 1, skb->len);
++			spin_unlock_bh(&dev->txq_lock[qidx]);
++			dev_kfree_skb_any(skb);
++		}
++	}
++
++	eth->tx_queued = q->queued;
++	if (n) {
++		eth->tx_reclaimed += n;
++		if (q->txq_stopped && q->ndesc - q->queued >= q->free_thr)
++			airoha_qdma_wake_netdev_txqs(q);
++	}
++
++	spin_unlock_bh(&q->lock);
++
++	if (n)
++		dev_info_ratelimited(eth->dev,
++				     "reclaimed %u TX descriptors (%u so far, ring %s, %u queued)\n",
++				     n, eth->tx_reclaimed, idle ? "idle" : "busy",
++				     eth->tx_queued);
++}
++
++/* count and clear the PSE events the stock driver reports */
++static void airoha_an7563_pse_events(struct airoha_eth *eth)
++{
++	u32 st = airoha_fe_rr(eth, REG_FE_INT_STATUS);
++	u32 ev = st & (FE_INT_PSE_FC_MASK | FE_INT_PSE_FQ_EMPTY |
++		       FE_INT_PSE_FC_DROP | FE_INT_PSE_EXCEPTION);
++
++	if (!ev)
++		return;
++
++	airoha_fe_wr(eth, REG_FE_INT_STATUS, ev);
++	if (ev & FE_INT_PSE_FQ_EMPTY)
++		eth->pse_fq_empty++;
++	if (ev & FE_INT_PSE_FC_DROP)
++		eth->pse_fc_drop++;
++	if (ev & FE_INT_PSE_FC_MASK)
++		eth->pse_fc++;
++	if (ev & FE_INT_PSE_EXCEPTION)
++		eth->pse_exception++;
++	dev_info_ratelimited(eth->dev,
++			     "PSE events %08x (fq empty %u, fc drop %u, fc %u, exception %u)\n",
++			     st, eth->pse_fq_empty, eth->pse_fc_drop,
++			     eth->pse_fc, eth->pse_exception);
++}
++
++static void airoha_an7563_stall_work(struct work_struct *work)
++{
++	struct airoha_eth *eth = container_of(work, struct airoha_eth,
++					      stall_work.work);
++	u32 irq_events = READ_ONCE(eth->irq_events);
++	bool idle = irq_events == eth->irq_events_seen;
++	u32 pages, busy, ppe_oq;
++	bool iq_full, oq_stuck;
++
++	eth->irq_events_seen = irq_events;
++	if (!test_bit(DEV_STATE_INITIALIZED, &eth->state))
++		goto out;
++
++	pages = airoha_an7563_pse_iq_pages(eth);
++	busy = airoha_qdma_rr(&eth->qdma[0], REG_QDMA_GLOBAL_CFG) &
++	       GLOBAL_CFG_RX_DMA_BUSY_MASK;
++	iq_full = pages > AIROHA_AN7563_PSE_IQ_STALL_PAGES && idle && busy;
++
++	ppe_oq = airoha_fe_rr(eth, REG_PSE_OQ_STA2) & 0xff;
++	oq_stuck = ppe_oq > AIROHA_AN7563_PSE_OQ_STUCK_PAGES &&
++		   ppe_oq == eth->ppe_oq_pages_seen;
++	eth->ppe_oq_pages_seen = ppe_oq;
++
++	if ((iq_full || oq_stuck) && airoha_an7563_ports_open(eth))
++		eth->stall_samples++;
++	else
++		eth->stall_samples = 0;
++
++	airoha_an7563_pse_events(eth);
++	airoha_an7563_tx_reclaim(eth);
++
++	if (eth->stall_samples >= AIROHA_AN7563_STALL_SAMPLES)
++		airoha_an7563_fe_recover(eth, "monitor");
++out:
++	if (!eth->stall_wedged)
++		schedule_delayed_work(&eth->stall_work, HZ);
++}
++
++#ifdef CONFIG_DEBUG_FS
++static int airoha_an7563_recover_set(void *data, u64 val)
++{
++	if (val)
++		airoha_an7563_fe_recover(data, "debugfs");
++
++	return 0;
++}
++DEFINE_DEBUGFS_ATTRIBUTE(airoha_an7563_recover_fops, NULL,
++			 airoha_an7563_recover_set, "%llu\n");
++
++static void airoha_an7563_stall_debugfs_init(struct airoha_eth *eth)
++{
++	struct dentry *dir = debugfs_create_dir("airoha_fe_stall", NULL);
++
++	debugfs_create_file("recover", 0200, dir, eth,
++			    &airoha_an7563_recover_fops);
++	debugfs_create_u32("recoveries", 0400, dir, &eth->recoveries);
++	debugfs_create_u32("irq_events", 0400, dir, &eth->irq_events);
++	debugfs_create_bool("wedged", 0400, dir, &eth->stall_wedged);
++	debugfs_create_u32("pse_fq_empty", 0400, dir, &eth->pse_fq_empty);
++	debugfs_create_u32("pse_fc_drop", 0400, dir, &eth->pse_fc_drop);
++	debugfs_create_u32("pse_fc", 0400, dir, &eth->pse_fc);
++	debugfs_create_u32("pse_exception", 0400, dir, &eth->pse_exception);
++	debugfs_create_u32("tx_reclaimed", 0400, dir, &eth->tx_reclaimed);
++	debugfs_create_u32("tx_queued", 0400, dir, &eth->tx_queued);
++	debugfs_create_u32("tx_report_stale", 0400, dir,
++			   &eth->tx_report_stale);
++	debugfs_create_u32("tx_report_late", 0400, dir, &eth->tx_report_late);
++}
++#else
++static void airoha_an7563_stall_debugfs_init(struct airoha_eth *eth)
++{
++}
++#endif
++
++static void airoha_an7563_stall_monitor_start(struct airoha_eth *eth)
++{
++	if (eth->soc->version != 0x7563)
++		return;
++
++	INIT_DELAYED_WORK(&eth->stall_work, airoha_an7563_stall_work);
++	eth->irq_events_seen = eth->irq_events;
++	schedule_delayed_work(&eth->stall_work, HZ);
++	airoha_an7563_stall_debugfs_init(eth);
++}
++
++static void airoha_an7563_stall_monitor_stop(struct airoha_eth *eth)
++{
++	if (eth->soc->version != 0x7563)
++		return;
++
++	cancel_delayed_work_sync(&eth->stall_work);
++	debugfs_lookup_and_remove("airoha_fe_stall", NULL);
++}
++
+ static void airoha_update_hw_stats(struct airoha_gdm_dev *dev)
+ {
+ 	struct airoha_gdm_port *port = dev->port;
+@@ -2774,12 +3389,13 @@
+ 					  struct airoha_qdma *qdma)
+ {
+ 	struct airoha_queue *q = &qdma->q_tx[0];
++	struct airoha_queue_entry *e;
+ 	struct airoha_qdma_desc *desc;
++	struct netdev_queue *txq;
+ 	dma_addr_t dma_addr;
+-	unsigned int len;
+ 	u32 tag, msg1, val;
+-	u16 index;
+-	int try;
++	u16 index, next;
++	unsigned int len;
+ 
+ 	if (WARN_ON_ONCE(!q->ndesc))
+ 		goto drop;
+@@ -2791,65 +3407,78 @@
+ 	tag = airoha_get_dsa_tag(skb, dev);
+ 	len = skb->len;
+ 
+-	dma_addr = dma_map_single(dev->dev.parent, skb->data, skb->len,
+-				  DMA_TO_DEVICE);
+-	if (unlikely(dma_mapping_error(dev->dev.parent, dma_addr)))
+-		goto drop;
++	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK,
++			  ((struct airoha_gdm_dev *)netdev_priv(dev))->port->id) |
++	       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
+ 
+ 	spin_lock_bh(&q->lock);
+ 
+-	desc = &q->desc[q->head];
+-	index = (q->head + 1) % q->ndesc;
++	if (q->flushing)
++		goto drop_unlock;
+ 
+-	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK,
+-			  ((struct airoha_gdm_dev *)netdev_priv(dev))->port->id) |
+-	       FIELD_PREP(QDMA_ETH_TXMSG_METER_MASK, 0x7f);
++	txq = skb_get_tx_queue(dev, skb);
++	if (q->queued + 1 >= q->ndesc) {
++		netif_tx_stop_queue(txq);
++		q->txq_stopped = true;
++		spin_unlock_bh(&q->lock);
++
++		return NETDEV_TX_BUSY;
++	}
+ 
+-	val = FIELD_PREP(QDMA_DESC_LEN_MASK, skb->len);
++	dma_addr = dma_map_single(dev->dev.parent, skb->data, len,
++				  DMA_TO_DEVICE);
++	if (unlikely(dma_mapping_error(dev->dev.parent, dma_addr)))
++		goto drop_unlock;
++
++	/* Free entries come back to q->tx_list in ring order:
++	 * airoha_qdma_tx_napi_poll() releases them as the TX done queue
++	 * reports them and also clears the TX done queue.
++	 */
++	e = list_first_entry(&q->tx_list, struct airoha_queue_entry, list);
++	index = e - q->entry;
++	list_del(&e->list);
++	e->skb = skb;
++	e->dma_addr = dma_addr;
++	e->dma_len = len;
++	e->dma_type = AIROHA_DMA_MAP_SINGLE;
++
++	next = list_empty(&q->tx_list) ? (index + 1) % q->ndesc :
++	       list_first_entry(&q->tx_list, struct airoha_queue_entry,
++				list) - q->entry;
++
++	desc = &q->desc[index];
++	val = FIELD_PREP(QDMA_DESC_LEN_MASK, len);
+ 	WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
+ 	WRITE_ONCE(desc->addr, cpu_to_le32(dma_addr));
+ 	WRITE_ONCE(desc->data, cpu_to_le32(FIELD_PREP(QDMA_DESC_NEXT_ID_MASK,
+-						      index)));
++						      next)));
+ 	WRITE_ONCE(desc->msg0,
+ 		   cpu_to_le32(FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag)));
+ 	WRITE_ONCE(desc->msg1, cpu_to_le32(msg1));
+ 	WRITE_ONCE(desc->msg2, cpu_to_le32(0xffff));
+ 	WRITE_ONCE(desc->msg3, 0);
+-
+-	dma_sync_single_for_device(dev->dev.parent,
+-				   q->desc_dma + q->head * sizeof(*desc),
+-				   sizeof(*desc), DMA_TO_DEVICE);
+ 	dma_wmb();
+-	airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(0), TX_RING_CPU_IDX_MASK,
+-			FIELD_PREP(TX_RING_CPU_IDX_MASK, index));
+ 
+-	for (try = 0; try < 1000; try++) {
+-		dma_sync_single_for_cpu(dev->dev.parent,
+-					q->desc_dma + q->head * sizeof(*desc),
+-					sizeof(*desc), DMA_FROM_DEVICE);
+-		val = le32_to_cpu(READ_ONCE(desc->ctrl));
+-		if (val & (QDMA_DESC_DONE_MASK | QDMA_DESC_DROP_MASK))
+-			break;
+-		udelay(1);
+-	}
++	q->queued++;
++	q->head = next;
+ 
+-	dma_unmap_single(dev->dev.parent, dma_addr, skb->len, DMA_TO_DEVICE);
+-	if (val & QDMA_DESC_DONE_MASK) {
+-		q->head = index;
+-		dev->stats.tx_packets++;
+-		dev->stats.tx_bytes += len;
+-		dev_consume_skb_any(skb);
+-	} else {
+-		dev->stats.tx_dropped++;
+-		dev_kfree_skb_any(skb);
++	skb_tx_timestamp(skb);
++	netdev_tx_sent_queue(txq, len);
++	if (q->ndesc - q->queued < q->free_thr) {
++		netif_tx_stop_queue(txq);
++		q->txq_stopped = true;
+ 	}
+-	WRITE_ONCE(desc->ctrl, 0);
+-	airoha_qdma_rmw(qdma, REG_IRQ_CLEAR_LEN(0), IRQ_CLEAR_LEN_MASK, 1);
++
++	if (netif_xmit_stopped(txq) || !netdev_xmit_more())
++		airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(0), TX_RING_CPU_IDX_MASK,
++				FIELD_PREP(TX_RING_CPU_IDX_MASK, next));
+ 
+ 	spin_unlock_bh(&q->lock);
+ 
+ 	return NETDEV_TX_OK;
+ 
++drop_unlock:
++	spin_unlock_bh(&q->lock);
+ drop:
+ 	dev_kfree_skb_any(skb);
+ 	dev->stats.tx_dropped++;
+@@ -4426,6 +5055,7 @@
+ 	eth->napi_dev->threaded = true;
+ 	strscpy(eth->napi_dev->name, "qdma_eth", sizeof(eth->napi_dev->name));
+ 	platform_set_drvdata(pdev, eth);
++	mutex_init(&eth->stall_lock);
+ 
+ 	err = airoha_hw_init(pdev, eth);
+ 	if (err)
+@@ -4456,6 +5086,8 @@
+ 	if (err)
+ 		goto error_napi_stop;
+ 
++	airoha_an7563_stall_monitor_start(eth);
++
+ 	return 0;
+ 
+ error_napi_stop:
+@@ -4500,6 +5132,8 @@
+ 	struct airoha_eth *eth = platform_get_drvdata(pdev);
+ 	int i;
+ 
++	airoha_an7563_stall_monitor_stop(eth);
++
+ 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
+ 		airoha_qdma_stop_napi(&eth->qdma[i]);
+ 		airoha_qdma_tx_cleanup(&eth->qdma[i]);
+@@ -4746,9 +5380,40 @@
+ };
+ MODULE_DEVICE_TABLE(of, of_airoha_match);
+ 
++/* Stop the frame engine on reboot. A warm reset leaves it running, and
++ * packets still arriving from the GDM ports would otherwise be written
++ * into RAM while the bootloader relocates itself there.
++ */
++static void airoha_shutdown(struct platform_device *pdev)
++{
++	struct airoha_eth *eth = platform_get_drvdata(pdev);
++	u32 busy = GLOBAL_CFG_TX_DMA_BUSY_MASK | GLOBAL_CFG_RX_DMA_BUSY_MASK;
++	u32 val;
++	int i;
++
++	if (!eth)
++		return;
++	airoha_an7563_stall_monitor_stop(eth);
++	for (i = AIROHA_GDM1_IDX; i <= AIROHA_GDM4_IDX; i++)
++		airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(i),
++					    FE_PSE_PORT_DROP);
++	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++) {
++		struct airoha_qdma *qdma = &eth->qdma[i];
++
++		if (!qdma->regs)
++			continue;
++		airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
++				  GLOBAL_CFG_TX_DMA_EN_MASK |
++				  GLOBAL_CFG_RX_DMA_EN_MASK);
++		readl_poll_timeout(qdma->regs + REG_QDMA_GLOBAL_CFG, val,
++				   !(val & busy), 10, 10000);
++	}
++}
++
+ static struct platform_driver airoha_driver = {
+ 	.probe = airoha_probe,
+ 	.remove = airoha_remove,
++	.shutdown = airoha_shutdown,
+ 	.driver = {
+ 		.name = KBUILD_MODNAME,
+ 		.of_match_table = of_airoha_match,
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -9,6 +9,7 @@
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/rhashtable.h>
++#include <net/addrconf.h>
+ #include <net/ipv6.h>
+ #include <net/pkt_cls.h>
+ #include <net/route.h>
+@@ -918,6 +919,36 @@
+ 	return 0;
+ }
+ 
++/* A bridged packet for one of our own addresses can cross the bridge twice
++ * with the same tuple, e.g. a LAN client whose route to this router goes
++ * through another router on the same LAN. The hash has no ingress port, so
++ * a subflow bound on the first pass would catch the second one as well and
++ * send it back to the other router instead of to the CPU.
++ */
++static bool airoha_ppe_foe_dest_is_local(struct sk_buff *skb,
++					 struct airoha_foe_entry *hwe)
++{
++	int type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, hwe->ib1);
++	struct net *net = skb->dev ? dev_net(skb->dev) : &init_net;
++
++	switch (type) {
++	case PPE_PKT_TYPE_IPV4_HNAPT:
++	case PPE_PKT_TYPE_IPV4_ROUTE:
++		return inet_addr_type(net,
++				      cpu_to_be32(hwe->ipv4.orig_tuple.dest_ip)) ==
++		       RTN_LOCAL;
++	case PPE_PKT_TYPE_IPV6_ROUTE_3T:
++	case PPE_PKT_TYPE_IPV6_ROUTE_5T: {
++		struct in6_addr addr;
++
++		ipv6_addr_cpu_to_be32(addr.s6_addr32, hwe->ipv6.dest_ip);
++		return ipv6_chk_addr(net, &addr, NULL, 0);
++	}
++	default:
++		return false;
++	}
++}
++
+ static void airoha_ppe_foe_insert_entry(struct airoha_ppe *ppe,
+ 					struct sk_buff *skb,
+ 					u32 hash, bool rx_wlan)
+@@ -964,7 +995,7 @@
+ 	airoha_ppe_foe_set_bridge_addrs(&br, eth_hdr(skb));
+ 	e = rhashtable_lookup_fast(&ppe->l2_flows, &br,
+ 				   airoha_l2_flow_table_params);
+-	if (e)
++	if (e && !airoha_ppe_foe_dest_is_local(skb, hwe))
+ 		airoha_ppe_foe_commit_subflow_entry(ppe, e, hash, rx_wlan);
+ unlock:
+ 	spin_unlock_bh(&ppe_lock);
+@@ -1117,10 +1148,6 @@
+ 	int err, i, offload_type;
+ 	u16 addr_type = 0;
+ 
+-	if (rhashtable_lookup(&eth->flow_table, &f->cookie,
+-			      airoha_flow_table_params))
+-		return -EEXIST;
+-
+ 	if (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_META))
+ 		return -EOPNOTSUPP;
+ 
+@@ -1285,6 +1312,25 @@
+ 			return err;
+ 	}
+ 
++	/* The flowtable uses the address of the flow as cookie. Flows of a
++	 * rebuilt flowtable (firewall reload) do not always get
++	 * FLOW_CLS_DESTROY here, so their entries stay in the table and a
++	 * new flow allocated at the same address would never be offloaded.
++	 * Keep -EEXIST only for the same flow offered by another block
++	 * callback and replace a stale entry.
++	 */
++	e = rhashtable_lookup(&eth->flow_table, &f->cookie,
++			      airoha_flow_table_params);
++	if (e) {
++		if (!memcmp(&e->data.d, &hwe.d, sizeof(hwe) - sizeof(hwe.ib1)))
++			return -EEXIST;
++
++		airoha_ppe_foe_flow_remove_entry(eth->ppe, e);
++		rhashtable_remove_fast(&eth->flow_table, &e->node,
++				       airoha_flow_table_params);
++		kfree(e);
++	}
++
+ 	e = kzalloc(sizeof(*e), GFP_KERNEL);
+ 	if (!e)
+ 		return -ENOMEM;
+--- a/drivers/net/ethernet/airoha/an7552_npu.c
++++ b/drivers/net/ethernet/airoha/an7552_npu.c
+@@ -1383,6 +1383,21 @@
+ 		halt_cores(ctx);
+ }
+ 
++/* A warm reboot does not reset the NPU or TDMA. Stop both so they cannot
++ * write into RAM while the bootloader loads the next image.
++ */
++static void an7552_npu_shutdown(struct platform_device *pdev)
++{
++	struct an7552_npu *ctx = platform_get_drvdata(pdev);
++
++	if (!ctx)
++		return;
++	if (ctx->tdma_enabled)
++		writel(readl(ctx->fe + 0xa04) & ~BIT(2), ctx->fe + 0xa04);
++	if (ctx->running)
++		halt_cores(ctx);
++}
++
+ static const struct of_device_id an7552_npu_match[] = {
+ 	{ .compatible = "airoha,an7552-npu" },
+ 	{}
+@@ -1392,6 +1407,7 @@
+ static struct platform_driver an7552_npu_driver = {
+ 	.probe = an7552_npu_probe,
+ 	.remove = an7552_npu_remove,
++	.shutdown = an7552_npu_shutdown,
+ 	.driver = {
+ 		.name = "an7552-npu",
+ 		.of_match_table = an7552_npu_match,

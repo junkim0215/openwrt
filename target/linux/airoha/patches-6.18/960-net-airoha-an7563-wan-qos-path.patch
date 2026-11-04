@@ -1,0 +1,67 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: an7563: uplink flows through the QDMA, bigger hw forwarding pool
+
+Offloaded flows bound to GDM2 were forwarded by the PPE straight to the
+MAC. With the EN8811H on a 1G copper link the MAC is PAUSE-stopped for
+rate matching and bursts from Wi-Fi overflow the 68 KB on-chip PSE pool.
+Keep the PSE QoS bit for those flows so they pass through the QDMA like
+on EN7581 and in the stock firmware (hw_nat fqos), which buffers them in
+DRAM, and grow the AN7563 hw forwarding pool from 32 to 1024 descriptors
+with the EN7581 low-water mark. Module parameter wan_qos=0 restores the
+direct path.
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1689,7 +1689,10 @@
+ 	}
+ }
+ 
+-#define AIROHA_AN7563_HW_DSCP_NUM	32
++/* DRAM hw forwarding pool: enough to absorb Wi-Fi bursts into a paused
++ * 1G copper link (2 KiB per descriptor)
++ */
++#define AIROHA_AN7563_HW_DSCP_NUM	1024
+ 
+ /* Program the AN7563 hw forwarding queue registers; also run after a QDMA
+  * reset.
+@@ -1705,6 +1708,8 @@
+ 			HW_FWD_DSCP_MIN_SCATTER_LEN_MASK,
+ 			FIELD_PREP(HW_FWD_DSCP_PAYLOAD_SIZE_MASK, 0) |
+ 			FIELD_PREP(HW_FWD_DSCP_MIN_SCATTER_LEN_MASK, 1));
++	airoha_qdma_rmw(qdma, REG_FWD_DSCP_LOW_THR, FWD_DSCP_LOW_THR_MASK,
++			FIELD_PREP(FWD_DSCP_LOW_THR_MASK, 128));
+ 	airoha_qdma_rmw(qdma, REG_LMGR_INIT_CFG,
+ 			LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
+ 			HW_FWD_DESC_NUM_MASK,
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -17,6 +17,12 @@
+ #include "airoha_regs.h"
+ #include "airoha_eth.h"
+ 
++/* AN7563: send PPE flows bound to GDM2 through the QDMA QoS path */
++static bool airoha_an7563_wan_qos = true;
++module_param_named(wan_qos, airoha_an7563_wan_qos, bool, 0644);
++MODULE_PARM_DESC(wan_qos,
++		 "AN7563: forward offloaded uplink flows through the QDMA (default: yes)");
++
+ /* Serialize airoha_gdm_dev flags, QDMA pointer and PPE CPU port
+  * configuration.
+  */
+@@ -420,9 +426,14 @@
+ 			val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port) |
+ 			       FIELD_PREP(AIROHA_FOE_IB2_DSCP, dsfield) |
+ 			       AIROHA_FOE_IB2_PSE_QOS;
+-			/* Use direct MAC forwarding for active Ethernet. */
++			/* On AN7563 the GDM2 uplink can bypass the QDMA
++			 * (direct MAC forwarding): no DRAM buffering, so a
++			 * paused 1G copper link overflows the PSE. Default to
++			 * the QDMA QoS path like the stock firmware (fqos).
++			 */
+ 			if (airoha_is_7563(eth) &&
+-			    port->id == AIROHA_GDM2_IDX)
++			    port->id == AIROHA_GDM2_IDX &&
++			    !airoha_an7563_wan_qos)
+ 				val &= ~AIROHA_FOE_IB2_PSE_QOS;
+ 			/* For downlink traffic consume SRAM memory for hw
+ 			 * forwarding descriptors queue.

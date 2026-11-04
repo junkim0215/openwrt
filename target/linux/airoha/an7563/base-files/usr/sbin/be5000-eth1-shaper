@@ -1,0 +1,45 @@
+#!/bin/sh
+# Shape CPU-originated traffic on eth1 to the copper link rate while the
+# EN8811H runs below 2.5 Gbit/s. The PHY rate-matches a slower copper link
+# with PAUSE frames; CPU frames that burst into the paused port overflow
+# the small on-chip packet buffer and the frame engine drops them
+# (PSE_DROP_CNT port 0), which costs TCP about half its throughput.
+# Hardware-offloaded flows do not pass this qdisc.
+
+DEV=eth1
+TAG=eth1-shaper
+
+current_root() {
+	tc qdisc show dev "$DEV" 2>/dev/null | sed -n 's/^qdisc \([a-z_]*\) .*root.*/\1/p' | head -n1
+}
+
+apply() {
+	local speed rate root
+	speed=$(cat /sys/class/net/$DEV/speed 2>/dev/null) || return 0
+	root=$(current_root)
+	case "$speed" in
+	10|100|1000)
+		case "$root" in
+		""|mq|noqueue|fq_codel|pfifo_fast|tbf) ;;
+		*) return 0 ;;	# somebody else's qdisc (SQM): leave it
+		esac
+		rate=$((speed * 95 / 100))mbit
+		if tc qdisc replace dev "$DEV" root handle 1: tbf rate "$rate" burst 16k latency 50ms 2>/dev/null; then
+			logger -t "$TAG" "link $speed Mbit/s: tbf $rate on $DEV"
+		fi
+		;;
+	*)
+		if [ "$root" = tbf ]; then
+			tc qdisc del dev "$DEV" root 2>/dev/null
+			logger -t "$TAG" "link ${speed:-down}: shaper removed from $DEV"
+		fi
+		;;
+	esac
+}
+
+apply
+ip monitor link 2>/dev/null | while read -r line; do
+	case "$line" in
+	*" $DEV: "*|*" $DEV@"*) sleep 2; apply ;;
+	esac
+done

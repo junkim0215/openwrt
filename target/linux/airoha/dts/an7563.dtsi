@@ -456,8 +456,9 @@
 			compatible = "airoha,an7563-eth";
 			reg = <0x1fb50000 0x2600>,
 			      <0x1fb54000 0x2000>,
-			      <0x1fb56000 0x2000>;
-			reg-names = "fe", "qdma0", "qdma1";
+			      <0x1fb56000 0x2000>,
+			      <0x1fa08000 0x200>;
+			reg-names = "fe", "qdma0", "qdma1", "xsi-mac";
 
 			resets = <&scu EN7581_FE_RST>,
 				 <&scu EN7581_FE_PDMA_RST>,

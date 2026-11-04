@@ -1,0 +1,80 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: an7563: let the GDM2 SerDes MAC honour PAUSE
+
+The EN8811H PHY keeps the SerDes at 2.5G and rate-matches a 1G copper
+link with PAUSE frames. The AN7563 XSI MAC at 0x1fa08000 (stock ae_wan
+HSGMII_BASE_REG[3]) comes up with RX_FC_EN and TX_FC_EN clear, so those
+PAUSE frames are ignored, bursts at 2.5G overflow the PHY and it drops
+the copper link every few seconds under upload. The stock driver sets
+both bits at init.
+
+Map the XSI MAC as the "xsi-mac" region of the ethernet node and set the
+two bits from the pause state phylink resolves in mac_link_up.
+---
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -965,4 +965,15 @@
+ 	__le32 rsv1;
+ };
+ 
++/* AN7563 XSI MAC between GDM2 and the HSGMII SerDes (stock ae_wan
++ * HSGMII_BASE_REG[3]); the FE does not see the PAUSE frames the
++ * external PHY sends, this MAC must act on them.
++ */
++#define REG_XSI_GLB_CFG			0x0000
++#define XSI_GLB_CFG_TX_FC_EN		BIT(5)
++#define XSI_GLB_CFG_RX_FC_EN		BIT(4)
++#define REG_XSI_FC_STS			0x0020
++#define REG_XSI_TXMBI_PAUSE_CNT		0x0120
++#define REG_XSI_RX_PAUSE_CNT		0x0190
++
+ #endif /* AIROHA_REGS_H */
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -675,6 +675,8 @@
+ 
+ 	unsigned long state;
+ 	void __iomem *fe_regs;
++	/* AN7563: XSI MAC in front of the GDM2 SerDes, NULL when not mapped */
++	void __iomem *xsi_mac_regs;
+ 
+ 	struct airoha_npu __rcu *npu;
+ 
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -4676,6 +4676,19 @@
+ 	struct airoha_eth *eth = dev->eth;
+ 	u32 frag_size_tx, frag_size_rx;
+ 	u32 mask, val;
++
++	/* On AN7563 the GDM2 SerDes MAC decides whether received PAUSE
++	 * frames stop transmission. The EN8811H rate-matches a 1G copper
++	 * link to the 2.5G SerDes with PAUSE, so honour it as negotiated.
++	 */
++	if (airoha_is_7563(eth) && port->id == AIROHA_GDM2_IDX &&
++	    eth->xsi_mac_regs) {
++		val = (rx_pause ? XSI_GLB_CFG_RX_FC_EN : 0) |
++		      (tx_pause ? XSI_GLB_CFG_TX_FC_EN : 0);
++		airoha_rmw(eth->xsi_mac_regs, REG_XSI_GLB_CFG,
++			   XSI_GLB_CFG_RX_FC_EN | XSI_GLB_CFG_TX_FC_EN, val);
++		return;
++	}
+ 
+ 	/* TX/RX frag is configured only for GDM4 */
+ 	if (port->id != AIROHA_GDM4_IDX)
+@@ -5017,6 +5030,15 @@
+ 	if (IS_ERR(eth->fe_regs))
+ 		return dev_err_probe(eth->dev, PTR_ERR(eth->fe_regs),
+ 				     "failed to iomap fe regs\n");
++
++	if (airoha_is_7563(eth)) {
++		eth->xsi_mac_regs =
++			devm_platform_ioremap_resource_byname(pdev, "xsi-mac");
++		if (IS_ERR(eth->xsi_mac_regs)) {
++			dev_warn(eth->dev, "no xsi-mac regs, GDM2 ignores PAUSE\n");
++			eth->xsi_mac_regs = NULL;
++		}
++	}
+ 
+ 	eth->rsts[0].id = "fe";
+ 	eth->rsts[1].id = "pdma";

@@ -1,0 +1,208 @@
+From: Pavel Bragin <pabrmail@gmail.com>
+Subject: [PATCH] net: airoha: ppe: own SMAC slot for DSA ports with their own MAC
+
+IPv6 FOE entries do not carry a source MAC, only an index into the PPE
+source MAC table, and the driver used the GDM port id, whose slot holds
+the MAC of the GDM net_device. A DSA user port with a MAC of its own
+(a WAN on a switch port with the WAN MAC set on it) therefore sent
+offloaded IPv6 with the conduit MAC. A PPPoE server drops such frames,
+since the session is bound to the WAN MAC, so IPv6 over PPPoE stalled
+as soon as the flow was bound in hardware while IPv4, whose entries
+carry the full source MAC, kept working.
+
+Hand out the free SMAC slots 5..14 to such source MACs. Show the SMAC
+slot and PPPoE session id of IPv6 entries in debugfs instead of a fake
+MAC, and list the slots in use in /sys/kernel/debug/ppe/smac.
+
+diff -urN -p a/drivers/net/ethernet/airoha/airoha_eth.h b/drivers/net/ethernet/airoha/airoha_eth.h
+--- a/drivers/net/ethernet/airoha/airoha_eth.h	2026-11-05 12:30:10
++++ b/drivers/net/ethernet/airoha/airoha_eth.h	2026-11-05 12:30:10
+@@ -309,6 +309,13 @@ enum {
+ };
+ 
+ #define AIROHA_FOE_MAC_SMAC_ID		GENMASK(20, 16)
++/* PPE source MAC table: slot <GDM port id> holds the GDM MAC, 0xf tells
++ * the PPE to keep the original source MAC, the slots in between are
++ * handed out to other source MACs (DSA user ports with their own MAC).
++ */
++#define AIROHA_PPE_SMAC_NUM		16
++#define AIROHA_PPE_SMAC_DYN_FIRST	5
++#define AIROHA_PPE_SMAC_KEEP		0xf
+ #define AIROHA_FOE_MAC_PPPOE_ID		GENMASK(15, 0)
+ 
+ #define AIROHA_FOE_MAC_WDMA_QOS		GENMASK(15, 12)
+@@ -651,6 +658,10 @@ struct airoha_ppe {
+ 
+ 	struct airoha_foe_stats *foe_stats;
+ 	dma_addr_t foe_stats_dma;
++
++	/* dynamic SMAC slots, protected by flow_offload_mutex */
++	u8 smac[AIROHA_PPE_SMAC_NUM][ETH_ALEN];
++	unsigned long smac_used;
+ 
+ 	struct dentry *debugfs_dir;
+ };
+diff -urN -p a/drivers/net/ethernet/airoha/airoha_ppe.c b/drivers/net/ethernet/airoha/airoha_ppe.c
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c	2026-11-05 12:30:10
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c	2026-11-05 12:30:10
+@@ -350,6 +350,62 @@ static void airoha_ppe_foe_set_bridge_addrs(struct air
+ 	br->src_mac_lo = get_unaligned_be32(eh->h_source + 2);
+ }
+ 
++static void airoha_ppe_set_smac(struct airoha_eth *eth, u8 id, const u8 *addr)
++{
++	u32 val;
++
++	val = (addr[2] << 24) | (addr[3] << 16) | (addr[4] << 8) | addr[5];
++	airoha_fe_wr(eth, REG_UPDMEM_DATA(0), val);
++	airoha_fe_wr(eth, REG_UPDMEM_CTRL(0),
++		     FIELD_PREP(PPE_UPDMEM_ADDR_MASK, id) |
++		     PPE_UPDMEM_WR_MASK | PPE_UPDMEM_REQ_MASK);
++
++	val = (addr[0] << 8) | addr[1];
++	airoha_fe_wr(eth, REG_UPDMEM_DATA(0), val);
++	airoha_fe_wr(eth, REG_UPDMEM_CTRL(0),
++		     FIELD_PREP(PPE_UPDMEM_ADDR_MASK, id) |
++		     FIELD_PREP(PPE_UPDMEM_OFFSET_MASK, 1) |
++		     PPE_UPDMEM_WR_MASK | PPE_UPDMEM_REQ_MASK);
++}
++
++/* IPv6 FOE entries carry no source MAC, only an index into the PPE SMAC
++ * table, and slot <port id> holds the MAC of the GDM net_device. A DSA user
++ * port with a MAC of its own (for instance a WAN on a switch port with the
++ * WAN MAC set on it) shares the conduit's GDM slot, so offloaded IPv6 left
++ * with the conduit MAC: a PPPoE server drops such frames (the session is
++ * bound to the WAN MAC) and IPv6 over PPPoE stalls once the flow is bound.
++ * Give every such source MAC a slot of its own.
++ */
++static u8 airoha_ppe_get_smac_id(struct airoha_eth *eth, u8 port_id,
++				 const u8 *addr)
++{
++	struct airoha_ppe *ppe = eth->ppe;
++	int i, free = -1;
++
++	lockdep_assert_held(&flow_offload_mutex);
++
++	for (i = AIROHA_PPE_SMAC_DYN_FIRST; i < AIROHA_PPE_SMAC_KEEP; i++) {
++		if (!test_bit(i, &ppe->smac_used)) {
++			if (free < 0)
++				free = i;
++			continue;
++		}
++		if (ether_addr_equal(ppe->smac[i], addr))
++			return i;
++	}
++
++	if (free < 0) {
++		dev_warn_once(eth->dev, "PPE SMAC table full, %pM\n", addr);
++		return port_id;
++	}
++
++	ether_addr_copy(ppe->smac[free], addr);
++	set_bit(free, &ppe->smac_used);
++	airoha_ppe_set_smac(eth, free, addr);
++
++	return free;
++}
++
+ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
+ 					struct airoha_foe_entry *hwe,
+ 					struct net_device *netdev, int type,
+@@ -434,6 +490,13 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_
+ 						  dsa_port);
+ 
+ 			smac_id = port->id;
++			if (dsa_port >= 0 &&
++			    type >= PPE_PKT_TYPE_IPV6_ROUTE_3T &&
++			    !is_zero_ether_addr(data->eth.h_source) &&
++			    !ether_addr_equal(data->eth.h_source,
++					      netdev->dev_addr))
++				smac_id = airoha_ppe_get_smac_id(eth, port->id,
++								 data->eth.h_source);
+ 		}
+ 	}
+ 
+@@ -1592,22 +1655,7 @@ void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *de
+ 
+ void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr)
+ {
+-	struct airoha_gdm_port *port = dev->port;
+-	struct airoha_eth *eth = dev->eth;
+-	u32 val;
+-
+-	val = (addr[2] << 24) | (addr[3] << 16) | (addr[4] << 8) | addr[5];
+-	airoha_fe_wr(eth, REG_UPDMEM_DATA(0), val);
+-	airoha_fe_wr(eth, REG_UPDMEM_CTRL(0),
+-		     FIELD_PREP(PPE_UPDMEM_ADDR_MASK, port->id) |
+-		     PPE_UPDMEM_WR_MASK | PPE_UPDMEM_REQ_MASK);
+-
+-	val = (addr[0] << 8) | addr[1];
+-	airoha_fe_wr(eth, REG_UPDMEM_DATA(0), val);
+-	airoha_fe_wr(eth, REG_UPDMEM_CTRL(0),
+-		     FIELD_PREP(PPE_UPDMEM_ADDR_MASK, port->id) |
+-		     FIELD_PREP(PPE_UPDMEM_OFFSET_MASK, 1) |
+-		     PPE_UPDMEM_WR_MASK | PPE_UPDMEM_REQ_MASK);
++	airoha_ppe_set_smac(dev->eth, dev->port->id, addr);
+ }
+ 
+ struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
+diff -urN -p a/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c b/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c
+--- a/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c	2026-11-05 12:30:10
++++ b/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c	2026-11-05 12:30:10
+@@ -150,10 +150,20 @@ static int airoha_ppe_debugfs_foe_show(struct seq_file
+ 		*((__be16 *)&h_dest[4]) = cpu_to_be16(l2->dest_mac_lo);
+ 		*((__be32 *)h_source) = cpu_to_be32(l2->src_mac_hi);
+ 
+-		seq_printf(m, " eth=%pM->%pM etype=%04x data=%08x"
++		if (type >= PPE_PKT_TYPE_IPV6_ROUTE_3T)
++			/* no source MAC in IPv6 entries: SMAC table slot */
++			seq_printf(m, " eth=smac%lu->%pM pppoe=%04lx",
++				   FIELD_GET(AIROHA_FOE_MAC_SMAC_ID,
++					     l2->src_mac_hi),
++				   h_dest,
++				   FIELD_GET(AIROHA_FOE_MAC_PPPOE_ID,
++					     l2->src_mac_hi));
++		else
++			seq_printf(m, " eth=%pM->%pM", h_source, h_dest);
++		seq_printf(m, " etype=%04x data=%08x"
+ 			      " vlan=%d,%d ib1=%08x ib2=%08x"
+ 			      " packets=%llu bytes=%llu\n",
+-			   h_source, h_dest, l2->etype, data,
++			   l2->etype, data,
+ 			   l2->vlan1, l2->vlan2, hwe->ib1, ib2,
+ 			   stats.packets, stats.bytes);
+ 	}
+@@ -173,6 +183,24 @@ DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_bind);
+ }
+ DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_bind);
+ 
++static int airoha_ppe_debugfs_smac_show(struct seq_file *m, void *private)
++{
++	struct airoha_ppe *ppe = m->private;
++	int i;
++
++	/* slots handed out to DSA ports with their own MAC; slots 1-4 hold
++	 * the GDM MACs
++	 */
++	mutex_lock(&flow_offload_mutex);
++	for (i = AIROHA_PPE_SMAC_DYN_FIRST; i < AIROHA_PPE_SMAC_KEEP; i++)
++		if (test_bit(i, &ppe->smac_used))
++			seq_printf(m, "%2d %pM\n", i, ppe->smac[i]);
++	mutex_unlock(&flow_offload_mutex);
++
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_smac);
++
+ int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
+ {
+ 	ppe->debugfs_dir = debugfs_create_dir("ppe", NULL);
+@@ -180,6 +208,8 @@ int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
+ 			    &airoha_ppe_debugfs_foe_all_fops);
+ 	debugfs_create_file("bind", 0444, ppe->debugfs_dir, ppe,
+ 			    &airoha_ppe_debugfs_foe_bind_fops);
++	debugfs_create_file("smac", 0444, ppe->debugfs_dir, ppe,
++			    &airoha_ppe_debugfs_smac_fops);
+ 
+ 	return 0;
+ }

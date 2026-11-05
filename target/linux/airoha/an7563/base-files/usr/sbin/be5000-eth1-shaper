@@ -1,5 +1,5 @@
 #!/bin/sh
-# Shape CPU-originated traffic on eth1 to the copper link rate while the
+# Shape CPU-originated traffic on eth1 to the copper link rate (100 %) while the
 # EN8811H runs below 2.5 Gbit/s. The PHY rate-matches a slower copper link
 # with PAUSE frames; CPU frames that burst into the paused port overflow
 # the small on-chip packet buffer and the frame engine drops them
@@ -23,7 +23,7 @@ apply() {
 		""|mq|noqueue|fq_codel|pfifo_fast|tbf) ;;
 		*) return 0 ;;	# somebody else's qdisc (SQM): leave it
 		esac
-		rate=$((speed * 95 / 100))mbit
+		rate=${speed}mbit
 		if tc qdisc replace dev "$DEV" root handle 1: tbf rate "$rate" burst 16k latency 50ms 2>/dev/null; then
 			logger -t "$TAG" "link $speed Mbit/s: tbf $rate on $DEV"
 		fi

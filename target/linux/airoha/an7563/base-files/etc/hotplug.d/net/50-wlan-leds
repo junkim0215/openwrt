@@ -1,0 +1,53 @@
+#!/bin/sh
+# ipTIME BE5100M: bind the per-band WLAN LEDs to the first AP interface of
+# each radio, whatever the interface is called.
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+[ "$ACTION" = add ] || exit 0
+[ "$(board_name)" = "iptime,be5100m" ] || exit 0
+case "$INTERFACE" in
+phy*-ap*|wlan*) ;;
+*) exit 0 ;;
+esac
+
+set_led() {
+  local led="/sys/class/leds/$1" ifname="$2"
+
+  [ -d "$led" ] || return
+  echo netdev > "$led/trigger"
+  echo "$ifname" > "$led/device_name"
+  echo 1 > "$led/link"
+  echo 1 > "$led/tx"
+  echo 1 > "$led/rx"
+}
+
+(
+  sleep 3
+  json_load "$(ubus call network.wireless status 2>/dev/null)" || exit 0
+  json_get_keys radios
+  for radio in $radios; do
+    ifname=
+    json_select "$radio"
+    json_select config
+    json_get_var band band
+    json_select ..
+    if json_is_a interfaces array; then
+      json_select interfaces
+      json_get_keys idx
+      for i in $idx; do
+        json_select "$i"
+        json_get_var ifname ifname
+        json_select ..
+        break
+      done
+      json_select ..
+    fi
+    json_select ..
+    [ -n "$ifname" ] || continue
+    case "$band" in
+    2g) set_led blue:wlan-2ghz "$ifname" ;;
+    5g) set_led blue:wlan-5ghz "$ifname" ;;
+    esac
+  done
+) &

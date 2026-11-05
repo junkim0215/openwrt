@@ -52,3 +52,41 @@ define Device/xiaomi_be5000-full
   ARTIFACTS :=
 endef
 TARGET_DEVICES += xiaomi_be5000-full
+
+define Build/iptime-be-kernel
+	python3 $(TOPDIR)/scripts/iptime-be-image.py kernel \
+		$@ $(1) $(KERNEL_LOADADDR) $@.new
+	mv $@.new $@
+endef
+
+define Build/iptime-be-webhdr
+	python3 $(TOPDIR)/scripts/iptime-be-image.py webhdr $@ $@.new $(1) $(2)
+	mv $@.new $@
+endef
+
+# Stock dual-image layout: OpenWrt goes to tclinux_slave (bootflag 1), the
+# stock firmware stays in tclinux. slot.bin is written there from U-Boot,
+# factory.bin is the same with the header the stock web UI expects (rename
+# it to *_16_006.bin, the web UI reads the version from the file name).
+define Device/iptime_be5100m
+  DEVICE_VENDOR := ipTIME
+  DEVICE_MODEL := BE5100M
+  DEVICE_DTS := an7563-iptime-be5100m
+  DEVICE_PACKAGES := an7552-npu-firmware kmod-phy-airoha-en8811h \
+	kmod-mt7996e kmod-mt7992-23-firmware wpad-mbedtls iw nand-utils \
+	kmod-usb3 kmod-usb-storage block-mount \
+	kmod-fs-exfat kmod-fs-ext4 kmod-fs-ntfs3 kmod-fs-vfat \
+	kmod-nls-cp437 kmod-nls-iso8859-1 kmod-nls-utf8 luci
+  KERNEL_LOADADDR := 0x80088000
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL := kernel-bin | lzma | \
+	iptime-be-kernel $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  IMAGES := slot.bin factory.bin sysupgrade.bin
+  IMAGE/slot.bin := append-kernel | pad-to 128k | append-rootfs | pad-rootfs
+  IMAGE/factory.bin := append-kernel | pad-to 128k | append-rootfs | \
+	pad-rootfs | iptime-be-webhdr be5100m 16_006
+  IMAGE/sysupgrade.bin := append-kernel | pad-to 128k | append-rootfs | \
+	pad-rootfs | append-metadata
+endef
+TARGET_DEVICES += iptime_be5100m

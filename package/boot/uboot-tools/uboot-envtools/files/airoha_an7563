@@ -15,9 +15,6 @@ case "$board" in
 xiaomi,be5000)
 	ubootenv_add_mtd "u-boot-env" "0x1c000" "0x4000" "0x20000"
 	;;
-iptime,be5100m)
-	ubootenv_add_mtd "u-boot-env" "0x0" "0x4000" "0x20000"
-	;;
 esac
 
 config_load ubootenv

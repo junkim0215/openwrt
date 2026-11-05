@@ -1,0 +1,11 @@
+--- a/drivers/net/phy/mediatek/Kconfig
++++ b/drivers/net/phy/mediatek/Kconfig
+@@ -23,7 +23,7 @@
+ 
+ config MEDIATEK_GE_SOC_PHY
+ 	tristate "MediaTek SoC Ethernet PHYs"
+-	depends on ARM64 || COMPILE_TEST
++	depends on ARM64 || ARM || COMPILE_TEST
+ 	depends on ARCH_AIROHA || (ARCH_MEDIATEK && NVMEM_MTK_EFUSE) || \
+ 		   COMPILE_TEST
+ 	select MTK_NET_PHYLIB

@@ -1,0 +1,21 @@
+--- a/drivers/net/phy/air_en8811h.c
++++ b/drivers/net/phy/air_en8811h.c
+@@ -762,6 +762,9 @@
+ {
+ 	struct en8811h_priv *priv = phydev->priv;
+ 	int ret, i;
++	u8 pol = device_property_read_bool(&phydev->mdio.dev,
++					  "airoha,led-active-low") ?
++		 AIR_ACTIVE_LOW : AIR_ACTIVE_HIGH;
+ 
+ 	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, AIR_PHY_LED_DUR_BLINK,
+ 			    dur);
+@@ -796,7 +799,7 @@
+ 	}
+ 
+ 	for (i = 0; i < num; ++i) {
+-		ret = air_led_init(phydev, i, AIR_LED_ENABLE, AIR_ACTIVE_HIGH);
++		ret = air_led_init(phydev, i, AIR_LED_ENABLE, pol);
+ 		if (ret < 0) {
+ 			phydev_err(phydev, "LED%d init failed: %d\n", i, ret);
+ 			return ret;

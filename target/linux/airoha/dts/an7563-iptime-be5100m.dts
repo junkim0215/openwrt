@@ -1,0 +1,386 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/* Bootloader installs ATF here (BL31 resident region, ~256 KiB). */
+/memreserve/ 0x80000000 0x88000;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/phy/airoha,an7581-usb-phy.h>
+#include "an7563.dtsi"
+
+/ {
+	model = "ipTIME BE5100M";
+	compatible = "iptime,be5100m", "airoha,an7563", "airoha,en7581";
+
+	aliases {
+		serial0 = &uart1;
+	};
+
+	chosen {
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x20000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		npu_firmware: npu-firmware@84000000 {
+			reg = <0x84000000 0x300000>;
+			no-map;
+		};
+
+		npu_pkt: npu-pkt@84400000 {
+			reg = <0x84400000 0x1600000>;
+			no-map;
+		};
+	};
+};
+
+&an7563_pinctrl {
+	gpio-ranges = <&an7563_pinctrl 0 0 28>;
+
+	wifi-enable-hog {
+		/* Stock U-Boot drives GPIO 6 high (MTK_GPIO_HIGH=6,27). */
+		gpio-hog;
+		gpios = <6 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "wifi-enable";
+	};
+};
+
+&npu {
+	memory-region = <&npu_firmware>, <&npu_pkt>;
+	memory-region-names = "firmware", "pkt";
+	status = "okay";
+};
+
+&pcie0 {
+	ranges = <0x82000000 0 0x20000000 0x20000000 0 0x4000000>;
+	status = "okay";
+
+	pcie@0,0 {
+		device_type = "pci";
+		reg = <0x0000 0 0 0 0>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges;
+
+		wifi@0,0 {
+			compatible = "pci14c3,7992";
+			airoha,npu = <&npu>;
+			airoha,eth = <&eth>;
+			reg = <0x0000 0 0 0 0>;
+			nvmem-cells = <&wifi_eeprom>;
+			nvmem-cell-names = "eeprom";
+		};
+	};
+};
+
+&pcie1 {
+	ranges = <0x82000000 0 0x24000000 0x24000000 0 0x4000000>;
+	status = "okay";
+};
+
+&snfi {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+};
+
+&gdm1 {
+	nvmem-cells = <&macaddr_lan 3>;
+	nvmem-cell-names = "mac-address";
+	status = "okay";
+};
+
+&i2c0 {
+	status = "okay";
+};
+
+/*
+ * Stock ipTIME layout. The DT order (not the address order) is deliberate:
+ * stock U-Boot passes root=/dev/mtdblock5 (main) or /dev/mtdblock8 (second
+ * image), so tclinux_slave must be mtd6 and its split rootfs mtd8.
+ * OpenWrt lives in tclinux_slave: FIP toc/certs + HDR2 (0x2100 bytes), then
+ * the FIT (fdt@1, kernel@1, filesystem@1), then squashfs on an erase block.
+ * Everything else stays read-only.
+ */
+&spi_nand {
+	airoha,bmt;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "bootloader";
+			reg = <0x0 0x80000>;
+			read-only;
+		};
+
+		partition@80000 {
+			label = "u-boot-env";
+			reg = <0x80000 0x80000>;
+			read-only;
+		};
+
+		partition@100000 {
+			label = "Factory";
+			reg = <0x100000 0x400000>;
+			read-only;
+
+			nvmem-layout {
+				compatible = "fixed-layout";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				wifi_eeprom: eeprom@0 {
+					reg = <0x0 0x1e00>;
+				};
+
+				macaddr_lan: macaddr@4 {
+					compatible = "mac-base";
+					reg = <0x4 0x6>;
+					#nvmem-cell-cells = <1>;
+				};
+			};
+		};
+
+		partition@500000 {
+			label = "tclinux";
+			reg = <0x500000 0x2800000>;
+			read-only;
+		};
+
+		partition@5500000 {
+			label = "stock_data";
+			reg = <0x5500000 0x800000>;
+			read-only;
+		};
+
+		partition@6c80000 {
+			label = "art";
+			reg = <0x6c80000 0x380000>;
+			read-only;
+		};
+
+		partition@2d00000 {
+			compatible = "denx,fit";
+			label = "tclinux_slave";
+			reg = <0x2d00000 0x2800000>;
+			openwrt,fit-offset = <0x2100>;
+		};
+	};
+};
+
+&hsgmii_pcs {
+	status = "okay";
+};
+
+&gsw_mdio {
+	phy_2p5g: ethernet-phy@f {
+		compatible = "ethernet-phy-id03a2.a411";
+		reg = <15>;
+		airoha,led-active-low;
+		reset-gpios = <&an7563_pinctrl 13 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <1000000>;
+		reset-deassert-us = <100000>;
+	};
+};
+
+&gdm2 {
+	nvmem-cells = <&macaddr_lan 1>;
+	nvmem-cell-names = "mac-address";
+	phy-handle = <&phy_2p5g>;
+	status = "okay";
+};
+
+&switch {
+	status = "okay";
+};
+
+&gsw_port1 {
+	label = "lan1";
+	status = "okay";
+};
+
+&gsw_port2 {
+	label = "lan2";
+	status = "okay";
+};
+
+&gsw_port3 {
+	label = "lan3";
+	status = "okay";
+};
+
+&gsw_port4 {
+	label = "lan4";
+	status = "okay";
+};
+
+/* LAN PHY LEDs are active-low on this board. */
+&gsw_phy1 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
+};
+
+&gsw_phy2 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
+};
+
+&gsw_phy3 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
+};
+
+&gsw_phy4 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
+};
+
+/ {
+	leds {
+		compatible = "gpio-leds";
+
+		led-status {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_BLUE>;
+			gpios = <&an7563_pinctrl 20 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+		};
+
+		led-wlan-2g {
+			function = LED_FUNCTION_WLAN_2GHZ;
+			color = <LED_COLOR_ID_BLUE>;
+			gpios = <&an7563_pinctrl 12 GPIO_ACTIVE_LOW>;
+		};
+
+		led-wlan-5g {
+			function = LED_FUNCTION_WLAN_5GHZ;
+			color = <LED_COLOR_ID_BLUE>;
+			gpios = <&an7563_pinctrl 27 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+/ {
+	soc {
+		usb0: usb@1fab0000 {
+			compatible = "mediatek,mtk-xhci";
+			reg = <0x1fab0000 0x3e00>,
+			      <0x1fab3e00 0x100>;
+			reg-names = "mac", "ippc";
+			interrupts = <GIC_SPI 33 IRQ_TYPE_LEVEL_HIGH>;
+
+			phys = <&usb0_u2 PHY_TYPE_USB2>,
+			       <&usb1_u2 PHY_TYPE_USB2>,
+			       <&usb0_u3 PHY_TYPE_USB3>;
+		};
+
+		usb_phy: phy@1fac0000 {
+			compatible = "airoha,an7583-usb-phy";
+			reg = <0x1fac0000 0x2000>,
+			      <0x1fa6f000 0x1000>,
+			      <0x1fa6e000 0x1000>,
+			      <0x1fa6a000 0x1000>;
+			reg-names = "phy", "ana", "pma", "dig";
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			usb0_u2: usb2-phy@0 {
+				reg = <0x0>;
+				airoha,usb2-monitor-clk-sel = <AIROHA_USB2_MONCLK_SEL1>;
+				#phy-cells = <1>;
+			};
+
+			usb1_u2: usb2-phy@1000 {
+				reg = <0x1000>;
+				airoha,usb2-monitor-clk-sel = <AIROHA_USB2_MONCLK_SEL2>;
+				#phy-cells = <1>;
+			};
+
+			usb0_u3: usb3-phy {
+				airoha,scu = <&scu>;
+				#phy-cells = <1>;
+			};
+		};
+	};
+};

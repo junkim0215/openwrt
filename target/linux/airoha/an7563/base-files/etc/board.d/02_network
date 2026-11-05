@@ -28,6 +28,9 @@ an7563_setup_interfaces()
 		ucidef_set_interface_macaddr "wan" "$wan_mac"
 		ucidef_set_label_macaddr "$wan_mac"
 		;;
+	iptime,be5100m)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "eth1"
+		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"
 		;;

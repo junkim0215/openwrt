@@ -7,6 +7,12 @@ REQUIRE_IMAGE_METADATA=1
 
 platform_check_image() {
 	case "$(board_name)" in
+	iptime,be5100m)
+		# slot image: TF-A FIP header, then HDR2 and the FIT
+		[ "$(get_magic_long "$1")" = "010064aa" ] && return 0
+		echo "Expected an ipTIME BE5100M slot image."
+		return 1
+		;;
 	xiaomi,be5000|airoha,an7563-evb)
 		[ "$(get_magic_long "$1")" = "d00dfeed" ] && return 0
 		echo "Expected an AN7563 FIT firmware image."
@@ -49,7 +55,7 @@ xiaomi_be5000_do_upgrade() {
 # point, so unload the driver directly.
 platform_pre_upgrade() {
 	case "$(board_name)" in
-	xiaomi,be5000)
+	xiaomi,be5000|iptime,be5100m)
 		rmmod mt7996e 2>/dev/null
 		;;
 	esac
@@ -60,6 +66,11 @@ platform_do_upgrade() {
 	case "$(board_name)" in
 	xiaomi,be5000)
 		xiaomi_be5000_do_upgrade "$1"
+		;;
+	iptime,be5100m)
+		# OpenWrt lives in the second stock slot; bootflag stays 1
+		PART_NAME=tclinux_slave
+		default_do_upgrade "$1"
 		;;
 	*)
 		default_do_upgrade "$1"

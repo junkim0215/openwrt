@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+# downloads.openwrt.org has no airoha/an7563 target and none of the awg,
+# nikki, podkop, youtubeUnblock and zapret feeds that feeds.conf.default
+# adds. Drop them, otherwise "apk update" fails on the missing indexes.
+
+. /lib/functions.sh
+
+[ "$(board_name)" = iptime,be5100m ] || exit 0
+
+feeds=/etc/apk/repositories.d/distfeeds.list
+
+sed -i "\,/targets/airoha/an7563/,d" "$feeds"
+sed -i "\,/packages/[^/]*/\(awg\|zapret\|nikki\|podkop\|youtubeUnblock\)/packages.adb\$,d" "$feeds"
+
+exit 0

@@ -9,24 +9,24 @@ return view.extend({
 		m = new form.Map('an7552-npu', _('Advanced settings'));
 
 		s = m.section(form.NamedSection, 'settings', 'npu', _('Wi-Fi NPU acceleration'),
-			_('With the NPU on, traffic between Wi-Fi and the wired ports is forwarded in hardware at up to about 1.9 Gbit/s. Traffic that the router itself processes (VPN such as AmneziaWG or Xray, zapret, file sharing and other services on the router) then reaches the CPU at about 450 Mbit/s.') + '<br /><br />' +
-			_('With the NPU off, all Wi-Fi traffic goes through the CPU: about 1.1 Gbit/s between Wi-Fi and the wired ports, but up to about 900 Mbit/s for traffic of the router itself.') + '<br /><br />' +
-			_('Turn the NPU off for the fastest VPN on this router: AmneziaWG gives about 250 Mbit/s without it and about 210 Mbit/s with it. Keep it on otherwise. Applying a change restarts Wi-Fi for a few seconds.'));
+			_('With the NPU on, traffic between Wi-Fi and the wired ports is forwarded by the NPU in hardware instead of the CPU.') + '<br /><br />' +
+			_('With the NPU off, all Wi-Fi traffic goes through the CPU.') + '<br /><br />' +
+			_('Applying a change restarts Wi-Fi for a few seconds.'));
 
 		o = s.option(form.Flag, 'enabled', _('Use the NPU'),
-			_('On: fastest forwarding between Wi-Fi and the wired ports. Off: fastest VPN and router services over Wi-Fi.'));
+			_('On: hardware forwarding between Wi-Fi and the wired ports. Off: all Wi-Fi traffic goes through the CPU.'));
 		o.default = o.enabled;
 		o.rmempty = false;
 
 		s = m.section(form.NamedSection, 'wifi', 'wifi', _('Wi-Fi latency'));
 
 		o = s.option(form.Flag, 'gaming', _('Gaming mode'),
-			_('Lower ping while someone downloads. On: other devices keep a ping of about 8 ms during a download. Off: 16-20 ms, but peak download speed is about 10% higher.'));
+			_('Shortens the 5 GHz transmit burst to keep latency low while another device downloads, at a possible cost in peak download speed.'));
 		o.default = o.disabled;
 		o.rmempty = false;
 
 		s = m.section(form.NamedSection, 'pppoe', 'pppoe', _('PPPoE'),
-			_('Hardware routing offload cannot send a packet larger than the PPPoE MTU and leaves it to the CPU, which forwards only about 200-300 Mbit/s. The router therefore lowers the TCP segment size (MSS) of every connection through PPPoE to this value. 1452 fits the usual PPPoE MTU of 1492; use 1460 for an MTU of 1500.') + '<br /><br />' +
+			_('Hardware routing offload cannot send a packet larger than the PPPoE MTU and leaves it to the CPU, which is slower. The router therefore lowers the TCP segment size (MSS) of every connection through PPPoE to this value. 1452 fits the usual PPPoE MTU of 1492; use 1460 for an MTU of 1500.') + '<br /><br />' +
 			_('Empty: only the MSS clamping of the firewall zone, which takes the size from the routes and misses connections that pbr or mwan3 send through PPPoE.'));
 
 		o = s.option(form.Value, 'mss', _('TCP MSS'),

@@ -576,7 +576,7 @@ Shutdown and PPE:
  	for (i = 0; i < ARRAY_SIZE(intr); i++) {
  		intr[i] = airoha_qdma_rr(qdma, REG_INT_STATUS(i));
  		intr[i] &= irq_bank->irqmask[i];
-@@ -2064,6 +2248,437 @@
+@@ -2064,6 +2248,440 @@
  	}
  }
  
@@ -911,10 +911,13 @@ Shutdown and PPE:
 +		eth->pse_fc++;
 +	if (ev & FE_INT_PSE_EXCEPTION)
 +		eth->pse_exception++;
-+	dev_info_ratelimited(eth->dev,
-+			     "PSE events %08x (fq empty %u, fc drop %u, fc %u, exception %u)\n",
-+			     st, eth->pse_fq_empty, eth->pse_fc_drop,
-+			     eth->pse_fc, eth->pse_exception);
++
++	/* flow control is routine back-pressure: count it in debugfs only */
++	if (ev & (FE_INT_PSE_FQ_EMPTY | FE_INT_PSE_FC_DROP))
++		dev_warn_ratelimited(eth->dev,
++				     "PSE events %08x (fq empty %u, fc drop %u, fc %u, exception %u)\n",
++				     st, eth->pse_fq_empty, eth->pse_fc_drop,
++				     eth->pse_fc, eth->pse_exception);
 +}
 +
 +static void airoha_an7563_stall_work(struct work_struct *work)

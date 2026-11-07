@@ -1,0 +1,331 @@
+From 077de3992f7afbcae88f320d6cd5372a625aec59 Mon Sep 17 00:00:00 2001
+From: Pavel Bragin <pabrmail@gmail.com>
+Date: Sat, 7 Nov 2026 17:02:45 +0400
+Subject: [PATCH] send: batch encrypted IPv4 packets into one UDP GSO skb
+
+Send the encrypted messages of one transmit list (same peer, same DSCP,
+up to 64 messages / ~60 KB) as a single UDP GSO skb with a frag_list
+(SKB_GSO_UDP_L4 | SKB_GSO_FRAGLIST). Routing, netfilter and the qdisc
+then run once per batch; skb_segment_list() splits it right before the
+driver. Messages keep their own length (random trailers / padding), so
+every list skb carries its own prebuilt IP/UDP header; inet_gso_segment()
+fills IP id, tot_len and checksum per segment, the UDP checksum stays
+CHECKSUM_PARTIAL as in the unbatched path. Packets on the wire are
+unchanged. IPv6 endpoints and single packets use the old path.
+Module parameter tx_batch (default on) switches it at runtime.
+
+Also take the random transport-padding prefix (S4) from a per-CPU
+pool instead of calling get_random_bytes() for every data packet.
+
+Kernels before 5.12 (SKB_GSO_FRAGLIST and the skb_segment_list() fixes)
+keep the per-packet path; iptunnel_xmit() gained ipcb_flags in 6.17.
+
+Xiaomi BE5000 (AN7563, 2x Cortex-A53 @ AArch32, no NEON), AWG 3.1 with
+S1-S4 12, header protection, random trailers, MTU 1376, iperf3 4 streams
+to a Flint 2 peer over 2.5G: encrypt 277 -> 336-348 Mbit/s (+22%),
+decrypt 437 -> 439-448 Mbit/s; receiver UDP InCsumErrors 0.
+---
+ src/send.c   |  70 ++++++++++++++++++++-
+ src/socket.c | 170 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ src/socket.h |   9 +++
+ 3 files changed, 248 insertions(+), 1 deletion(-)
+
+diff --git a/src/send.c b/src/send.c
+index b3f80b0..7bf4752 100644
+--- a/src/send.c
++++ b/src/send.c
+@@ -222,6 +222,37 @@ static unsigned int calculate_skb_padding(struct sk_buff *skb)
+ 	return padded_size - last_unit;
+ }
+ 
++/* Random prefix of data packets (transport padding, S4): taking it from a
++ * per-CPU pool refilled in large chunks avoids one get_random_bytes() call
++ * (CRNG state derivation + ChaCha block) per packet.
++ */
++#define AWG_RND_POOL 512
++struct awg_rnd_pool {
++	u8 buf[AWG_RND_POOL];
++	unsigned int pos;
++};
++static DEFINE_PER_CPU(struct awg_rnd_pool, awg_rnd_pool) = { .pos = AWG_RND_POOL };
++
++static void awg_random_prefix(u8 *dst, unsigned int len)
++{
++	struct awg_rnd_pool *p;
++
++	if (unlikely(len > AWG_RND_POOL / 4)) {
++		get_random_bytes(dst, len);
++		return;
++	}
++	local_bh_disable();
++	p = this_cpu_ptr(&awg_rnd_pool);
++	if (p->pos + len > AWG_RND_POOL) {
++		get_random_bytes(p->buf, AWG_RND_POOL);
++		p->pos = 0;
++	}
++	memcpy(dst, p->buf + p->pos, len);
++	memzero_explicit(p->buf + p->pos, len);
++	p->pos += len;
++	local_bh_enable();
++}
++
+ static bool encrypt_packet(struct sk_buff *skb, struct noise_keypair *keypair
+ 	COMPAT_MAYBE_SIMD_CONTEXT(simd_context_t *simd_context))
+ {
+@@ -295,7 +326,7 @@ static bool encrypt_packet(struct sk_buff *skb, struct noise_keypair *keypair
+ 	pskb_put(skb, trailer, trailer_len);
+ 
+ 	crypto = skb_push(skb, padding);
+-	get_random_bytes(crypto, padding);
++	awg_random_prefix(crypto, padding);
+ 
+ 	if (awg_header_protection_init(&state, peer->device, crypto))
+ 		chacha20_crypt(&state, (u8*)header, (u8*)header, sizeof(*header));
+@@ -340,6 +371,43 @@ static void wg_packet_create_data_done(struct wg_peer *peer, struct sk_buff *fir
+ 
+ 	wg_timers_any_authenticated_packet_traversal(peer);
+ 	wg_timers_any_authenticated_packet_sent(peer);
++#ifdef AWG_TX_BATCH
++	if (READ_ONCE(awg_tx_batch) && first->next) {
++		/* Batches: same DSCP, <= 64 segments, <= ~60 KB per batch */
++		struct sk_buff *bfirst = NULL, *blast = NULL;
++		unsigned int bsegs = 0, bbytes = 0;
++		bool bdata = false;
++		u8 bds = 0;
++
++		skb_list_walk_safe(first, skb, next) {
++			if (bfirst && (PACKET_CB(skb)->ds != bds || bsegs >= 64 ||
++				       bbytes + skb->len + 28 > 60000)) {
++				blast->next = NULL;
++				if (wg_socket_send_list_to_peer(peer, bfirst, bsegs, bds) && bdata)
++					data_sent = true;
++				bfirst = NULL;
++			}
++			if (!bfirst) {
++				bfirst = skb;
++				bsegs = bbytes = 0;
++				bdata = false;
++				bds = PACKET_CB(skb)->ds;
++			} else {
++				blast->next = skb;
++			}
++			blast = skb;
++			bsegs++;
++			bbytes += skb->len + 28;
++			if (!PACKET_CB(skb)->is_keepalive)
++				bdata = true;
++		}
++		if (bfirst) {
++			blast->next = NULL;
++			if (wg_socket_send_list_to_peer(peer, bfirst, bsegs, bds) && bdata)
++				data_sent = true;
++		}
++	} else
++#endif
+ 	skb_list_walk_safe(first, skb, next) {
+ 		bool is_keepalive = PACKET_CB(skb)->is_keepalive;
+ 
+diff --git a/src/socket.c b/src/socket.c
+index 9036e4d..f433952 100644
+--- a/src/socket.c
++++ b/src/socket.c
+@@ -95,6 +95,176 @@ out:
+ 	return ret;
+ }
+ 
++/* Batched IPv4 send: the encrypted messages of one transmit list (same peer,
++ * same DSCP) leave as a single UDP GSO skb with a frag_list (SKB_GSO_FRAGLIST).
++ * Routing, netfilter and the qdisc then run once per batch instead of once per
++ * packet; skb_segment_list() splits it right before the driver. Every message
++ * keeps its own length (random trailers), so each list skb carries its own
++ * prebuilt IP/UDP header; inet_gso_segment() fills IP id/tot_len/check per
++ * segment and the UDP checksum stays CHECKSUM_PARTIAL (offloaded as before).
++ * On the wire the packets are identical to the unbatched path.
++ */
++#ifdef AWG_TX_BATCH
++bool awg_tx_batch = true;
++module_param_named(tx_batch, awg_tx_batch, bool, 0644);
++MODULE_PARM_DESC(tx_batch, "Send encrypted IPv4 packets of a peer as one UDP GSO batch");
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0)
++#define awg_iptunnel_xmit(sk, rt, skb, src, dst, proto, tos, ttl, df, xnet) \
++	iptunnel_xmit(sk, rt, skb, src, dst, proto, tos, ttl, df, xnet)
++#else
++#define awg_iptunnel_xmit(sk, rt, skb, src, dst, proto, tos, ttl, df, xnet) \
++	iptunnel_xmit(sk, rt, skb, src, dst, proto, tos, ttl, df, xnet, 0)
++#endif
++
++static void awg_udp_hdr(struct sk_buff *skb, __be16 sport, __be16 dport,
++			__be32 saddr, __be32 daddr)
++{
++	struct udphdr *uh;
++
++	__skb_push(skb, sizeof(*uh));
++	skb_reset_transport_header(skb);
++	uh = udp_hdr(skb);
++	uh->source = sport;
++	uh->dest = dport;
++	uh->len = htons(skb->len);
++	skb->ip_summed = CHECKSUM_PARTIAL;
++	skb->csum_start = skb_transport_header(skb) - skb->head;
++	skb->csum_offset = offsetof(struct udphdr, check);
++	uh->check = ~udp_v4_check(skb->len, saddr, daddr, 0);
++}
++
++static int send4_batch(struct wg_device *wg, struct sk_buff *head,
++		       unsigned int nsegs, struct endpoint *endpoint, u8 ds,
++		       struct dst_cache *cache)
++{
++	struct flowi4 fl = {
++		.saddr = endpoint->src4.s_addr,
++		.daddr = endpoint->addr4.sin_addr.s_addr,
++		.fl4_dport = endpoint->addr4.sin_port,
++		.flowi4_mark = wg->fwmark,
++		.flowi4_proto = IPPROTO_UDP
++	};
++	struct sk_buff *tails = head->next, *t;
++	struct rtable *rt = NULL;
++	struct sock *sock;
++	unsigned int payload;
++	u8 ttl;
++	int ret = 0;
++
++	rcu_read_lock_bh();
++	sock = rcu_dereference_bh(wg->sock4);
++	if (unlikely(!sock)) {
++		ret = -ENONET;
++		goto err;
++	}
++	fl.fl4_sport = inet_sk(sock)->inet_sport;
++	if (cache)
++		rt = dst_cache_get_ip4(cache, &fl.saddr);
++	if (!rt) {
++		/* Rare (route change, first packet): let the regular path resolve
++		 * and cache the route; the next batch will find it.
++		 */
++		ret = -EAGAIN;
++		goto out;
++	}
++	ttl = ip4_dst_hoplimit(&rt->dst);
++
++	skb_mark_not_on_list(head);
++	skb_orphan(head);
++	head->dev = wg->dev;
++	head->mark = wg->fwmark;
++	head->ignore_df = 1;
++
++	for (t = tails; t; t = t->next) {
++		struct iphdr *iph;
++
++		skb_orphan(t);
++		t->dev = wg->dev;
++		t->mark = wg->fwmark;
++		t->ignore_df = 1;
++		t->protocol = htons(ETH_P_IP);
++		awg_udp_hdr(t, fl.fl4_sport, fl.fl4_dport, fl.saddr, fl.daddr);
++		__skb_push(t, sizeof(*iph));
++		skb_reset_network_header(t);
++		iph = ip_hdr(t);
++		iph->version = 4;
++		iph->ihl = sizeof(*iph) >> 2;
++		iph->tos = ds;
++		iph->tot_len = htons(t->len);
++		iph->id = 0;
++		iph->frag_off = 0;
++		iph->ttl = ttl;
++		iph->protocol = IPPROTO_UDP;
++		iph->saddr = fl.saddr;
++		iph->daddr = fl.daddr;
++		ip_send_check(iph);
++		__skb_pull(t, sizeof(*iph) + sizeof(struct udphdr));
++		head->len += t->len;
++		head->data_len += t->len;
++		head->truesize += t->truesize;
++	}
++	head->next = NULL;
++	skb_shinfo(head)->frag_list = tails;
++
++	awg_udp_hdr(head, fl.fl4_sport, fl.fl4_dport, fl.saddr, fl.daddr);
++	/* awg_udp_hdr() used the whole skb length; fix the head to its own message */
++	payload = skb_pagelen(head) - sizeof(struct udphdr);
++	udp_hdr(head)->len = htons(sizeof(struct udphdr) + payload);
++	udp_hdr(head)->check = ~udp_v4_check(sizeof(struct udphdr) + payload,
++					     fl.saddr, fl.daddr, 0);
++	memset(&(IPCB(head)->opt), 0, sizeof(IPCB(head)->opt));
++	skb_shinfo(head)->gso_size = payload;
++	skb_shinfo(head)->gso_segs = nsegs;
++	skb_shinfo(head)->gso_type = SKB_GSO_UDP_L4 | SKB_GSO_FRAGLIST;
++
++	awg_iptunnel_xmit(sock, rt, head, fl.saddr, fl.daddr, IPPROTO_UDP, ds,
++			  ttl, 0, false);
++	goto out;
++
++err:
++	kfree_skb_list(head);
++out:
++	rcu_read_unlock_bh();
++	return ret;
++}
++
++/* Send a ->next linked list of encrypted skbs to the peer. Returns the number
++ * of bytes handed to the stack (0 on failure).
++ */
++size_t wg_socket_send_list_to_peer(struct wg_peer *peer, struct sk_buff *first,
++				   unsigned int nsegs, u8 ds)
++{
++	struct sk_buff *skb, *next;
++	size_t len = 0;
++	int ret = -EAGAIN;
++
++	for (skb = first; skb; skb = skb->next)
++		len += skb->len;
++
++	read_lock_bh(&peer->endpoint_lock);
++	if (nsegs > 1 && peer->endpoint.addr.sa_family == AF_INET)
++		ret = send4_batch(peer->device, first, nsegs, &peer->endpoint,
++				  ds, &peer->endpoint_cache);
++	if (!ret)
++		peer->tx_bytes += len;
++	read_unlock_bh(&peer->endpoint_lock);
++	if (!ret)
++		return len;
++	if (ret != -EAGAIN)
++		return 0;
++
++	len = 0;
++	skb_list_walk_safe(first, skb, next) {
++		size_t l = skb->len;
++
++		if (!wg_socket_send_skb_to_peer(peer, skb, ds))
++			len += l;
++	}
++	return len;
++}
++#endif /* AWG_TX_BATCH */
++
+ static int send6(struct wg_device *wg, struct sk_buff *skb,
+ 		 struct endpoint *endpoint, u8 ds, struct dst_cache *cache)
+ {
+diff --git a/src/socket.h b/src/socket.h
+index 073a9b8..29b5b6c 100644
+--- a/src/socket.h
++++ b/src/socket.h
+@@ -16,6 +16,15 @@ void wg_socket_reinit(struct wg_device *wg, struct sock *new4,
+ 		      struct sock *new6);
+ int wg_socket_send_buffer_to_peer(struct wg_peer *peer, void *data,
+ 				  size_t len, u8 ds, size_t padding, bool trailer);
++/* Batched UDP GSO send needs SKB_GSO_FRAGLIST (5.6) and the skb_segment_list()
++ * fixes of 5.12; older kernels keep the per-packet path.
++ */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)
++#define AWG_TX_BATCH 1
++extern bool awg_tx_batch;
++size_t wg_socket_send_list_to_peer(struct wg_peer *peer, struct sk_buff *first,
++				   unsigned int nsegs, u8 ds);
++#endif
+ int wg_socket_send_skb_to_peer(struct wg_peer *peer, struct sk_buff *skb,
+ 			       u8 ds);
+ int wg_socket_send_buffer_as_reply_to_skb(struct wg_device *wg,
+-- 
+2.54.0 (Apple Git-157)
+

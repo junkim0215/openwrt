@@ -1,0 +1,17 @@
+# Xiaomi BE5000: the Wi-Fi driver creates its NAPI threads and interfaces
+# after packet_steering has run, at boot and whenever the NPU switch reloads
+# mt7996e, so apply the CPU layout again once a Wi-Fi interface appears.
+
+[ "$ACTION" = add ] || exit 0
+
+# AP and station interfaces only; the stamon monitor comes and goes every few seconds
+case "$DEVICENAME" in
+phy*.*) ;;
+*) exit 0 ;;
+esac
+
+[ -x /usr/libexec/platform/packet-steering.sh ] || exit 0
+/etc/init.d/packet_steering enabled || exit 0
+
+# let the other interfaces of the same radio come up first
+( sleep 3; /etc/init.d/packet_steering reload ) >/dev/null 2>&1 &

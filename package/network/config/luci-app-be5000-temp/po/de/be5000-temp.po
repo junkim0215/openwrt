@@ -15,3 +15,23 @@ msgstr "Temperatur"
 msgid "Wi-Fi"
 msgstr "WLAN"
 
+msgid "24-hour history"
+msgstr "Verlauf über 24 Stunden"
+
+msgid "Maximum"
+msgstr "Maximum"
+
+msgid "Minimum"
+msgstr "Minimum"
+
+msgid "No readings yet: the first one appears within a minute."
+msgstr "Noch keine Messwerte: Der erste erscheint innerhalb einer Minute."
+
+msgid "Now"
+msgstr "Jetzt"
+
+msgid "Sensor"
+msgstr "Sensor"
+
+msgid "The last 24 hours, one reading a minute. The history is kept in memory and starts over after a reboot."
+msgstr "Die letzten 24 Stunden, ein Messwert pro Minute. Der Verlauf liegt im Arbeitsspeicher und beginnt nach einem Neustart von vorn."

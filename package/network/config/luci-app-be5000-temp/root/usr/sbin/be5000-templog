@@ -1,0 +1,40 @@
+#!/bin/sh
+# Record the CPU, SoC and Wi-Fi temperatures once a minute.
+# The log lives in RAM and keeps the last 24 hours: "time cpu soc wifi",
+# temperatures in millidegrees, "-" when a sensor is missing.
+
+LOG=/tmp/be5000-temp.log
+KEEP=1440
+
+wifi_sensor() {
+	local d
+
+	for d in /sys/class/hwmon/hwmon*; do
+		case "$(cat "$d/name" 2>/dev/null)" in
+		mt7996*) echo "$d/temp1_input"; return ;;
+		esac
+	done
+}
+
+n=0
+wifi=
+
+while :; do
+	# the Wi-Fi driver may load later or come back under another hwmon
+	[ -r "$wifi" ] || wifi=$(wifi_sensor)
+
+	cpu=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+	soc=$(cat /sys/class/thermal/thermal_zone1/temp 2>/dev/null)
+	wl=
+	[ -n "$wifi" ] && wl=$(cat "$wifi" 2>/dev/null)
+
+	echo "$(date +%s) ${cpu:--} ${soc:--} ${wl:--}" >> "$LOG"
+
+	n=$((n + 1))
+	if [ "$n" -ge 60 ]; then
+		n=0
+		tail -n "$KEEP" "$LOG" > "$LOG.new" && mv "$LOG.new" "$LOG"
+	fi
+
+	sleep 60
+done

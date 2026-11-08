@@ -47,6 +47,11 @@ return baseclass.extend({
 			]));
 		});
 
+		table.appendChild(E('tr', { 'class': 'tr' }, [
+			E('td', { 'class': 'td left', 'width': '33%' }, [ ' ' ]),
+			E('td', { 'class': 'td left' }, E('a', { 'href': L.url('admin/status/realtime/temperature') }, _('24-hour history')))
+		]));
+
 		return table;
 	}
 });

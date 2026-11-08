@@ -3,6 +3,7 @@
 		"description": "Grant access to the temperature sensors",
 		"read": {
 			"file": {
+				"/tmp/be5000-temp.log": [ "read" ],
 				"/sys/class/thermal/thermal_zone*/temp": [ "read" ],
 				"/sys/class/hwmon/hwmon*/name": [ "read" ],
 				"/sys/class/hwmon/hwmon*/temp1_input": [ "read" ],

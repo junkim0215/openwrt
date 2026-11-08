@@ -17,6 +17,9 @@ function zoneOf(name) {
 	return zone ? zone.name : null;
 }
 
+/* themes differ: Argon drops list markers and section padding */
+var BOX = 'padding:0.5rem 1rem 1rem';
+
 function freeName() {
 	for (var i = 0; ; i++)
 		if (!uci.get('network', 'awg' + i))
@@ -74,28 +77,28 @@ return view.extend({
 				E('th', { 'class': 'th' }, _('Server')),
 				E('th', { 'class': 'th' }, _('Firewall zone'))
 			])
-		].concat(rows)) : E('p', E('em', _('There are no AmneziaWG interfaces yet.')));
+		].concat(rows)) : E('p', {}, E('em', _('There are no AmneziaWG interfaces yet.')));
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', _('AmneziaWG')),
 			E('div', { 'class': 'cbi-map-descr' }, _('AmneziaWG is set up as a network interface. Its settings are in Network → Interfaces, the handshakes and the traffic in Status → AmneziaWG.')),
 			E('div', { 'class': 'cbi-section' }, [
 				list,
-				E('div', { 'class': 'right' }, [
-					E('a', { 'class': 'btn', 'href': L.url('admin/status/amneziawg') }, _('Status')), ' ',
-					E('a', { 'class': 'btn', 'href': L.url('admin/network/network') }, _('Interfaces'))
+				E('div', { 'class': 'right', 'style': BOX }, [
+					E('a', { 'class': 'btn cbi-button cbi-button-neutral', 'href': L.url('admin/status/amneziawg') }, _('Status')), ' ',
+					E('a', { 'class': 'btn cbi-button cbi-button-neutral', 'href': L.url('admin/network/network') }, _('Interfaces'))
 				])
 			]),
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', _('New client')),
-				E('ol', [
-					E('li', _('Create the interface: %s appears in Network → Interfaces, in the wan firewall zone.').format(name)),
-					E('li', _('Click Edit next to %s.').format(name)),
-					E('li', _('On the General Settings tab click Load configuration…, choose the .conf file (in the AmneziaVPN app: share the connection in the AmneziaWG native format) and click Import settings.')),
-					E('li', _('On the Peers tab edit the peer and turn on Route Allowed IPs: with AllowedIPs = 0.0.0.0/0 all traffic goes into the tunnel.')),
-					E('li', _('Click Save & Apply.'))
+				E('ol', { 'style': 'margin:0;padding:0.5rem 1rem 0.5rem 2.5rem' }, [
+					E('li', { 'style': 'list-style-type:decimal' }, _('Create the interface: %s appears in Network → Interfaces, in the wan firewall zone.').format(name)),
+					E('li', { 'style': 'list-style-type:decimal' }, _('Click Edit next to %s.').format(name)),
+					E('li', { 'style': 'list-style-type:decimal' }, _('On the General Settings tab click Load configuration…, choose the .conf file (in the AmneziaVPN app: share the connection in the AmneziaWG native format) and click Import settings.')),
+					E('li', { 'style': 'list-style-type:decimal' }, _('On the Peers tab edit the peer and turn on Route Allowed IPs: with AllowedIPs = 0.0.0.0/0 all traffic goes into the tunnel.')),
+					E('li', { 'style': 'list-style-type:decimal' }, _('Click Save & Apply.'))
 				]),
-				E('div', { 'class': 'right' }, E('button', {
+				E('div', { 'class': 'right', 'style': BOX }, E('button', {
 					'class': 'btn cbi-button-add',
 					'click': ui.createHandlerFn(this, 'handleCreate', name)
 				}, _('Create interface %s').format(name)))

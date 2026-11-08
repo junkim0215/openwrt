@@ -15,3 +15,23 @@ msgstr "Температура"
 msgid "Wi-Fi"
 msgstr "Wi-Fi"
 
+msgid "24-hour history"
+msgstr "Історія за добу"
+
+msgid "Maximum"
+msgstr "Максимум"
+
+msgid "Minimum"
+msgstr "Мінімум"
+
+msgid "No readings yet: the first one appears within a minute."
+msgstr "Вимірювань ще немає: перше з’явиться протягом хвилини."
+
+msgid "Now"
+msgstr "Зараз"
+
+msgid "Sensor"
+msgstr "Датчик"
+
+msgid "The last 24 hours, one reading a minute. The history is kept in memory and starts over after a reboot."
+msgstr "Останні 24 години, одне вимірювання на хвилину. Історія зберігається в пам’яті й після перезавантаження починається знову."

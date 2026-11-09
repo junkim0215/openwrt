@@ -42,7 +42,8 @@ TARGET_DEVICES += xiaomi_be5000
 define Device/xiaomi_be5000-full
   $(Device/xiaomi_be5000)
   DEVICE_VARIANT := (VPN)
-  DEVICE_PACKAGES += kmod-amneziawg amneziawg-tools luci-proto-amneziawg \
+  DEVICE_PACKAGES += -dnsmasq dnsmasq-full \
+	kmod-amneziawg amneziawg-tools luci-proto-amneziawg \
 	luci-i18n-amneziawg-ru zapret luci-app-zapret \
 	https-dns-proxy luci-app-https-dns-proxy pbr luci-app-pbr amnezia-xray-core \
 	luci-app-xray kmod-nft-tproxy luci-app-amneziawg-menu luci-theme-argon \

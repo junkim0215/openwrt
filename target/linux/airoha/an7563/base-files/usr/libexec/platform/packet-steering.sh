@@ -12,7 +12,7 @@
 generic=/usr/libexec/network/packet-steering.uc
 
 case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
-xiaomi,be5000) ;;
+xiaomi,be5000|iptime,be5100m) ;;
 *) exec "$generic" "$@" ;;
 esac
 

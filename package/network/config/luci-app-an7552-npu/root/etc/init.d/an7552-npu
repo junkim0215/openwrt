@@ -43,11 +43,26 @@ txop_apply() {
 	return 0
 }
 
+# Wi-Fi NPU offload needs a Wi-Fi node with airoha,npu in the device tree
+# (the MT7990 of the BE3600plus has none). The result is kept in
+# an7552-npu.settings.available for the LuCI page.
+npu_detect() {
+	local avail=0
+
+	find /proc/device-tree -name airoha,npu 2>/dev/null | grep -q /wifi && avail=1
+	[ "$(uci -q get an7552-npu.settings.available)" = "$avail" ] && return 0
+	uci set an7552-npu.settings.available=$avail
+	uci commit an7552-npu
+}
+
 npu_apply() {
-	local enabled want running
+	local enabled want running avail
 
 	config_load an7552-npu
 	config_get_bool enabled settings enabled 1
+	config_get avail settings available 1
+	# no Wi-Fi NPU offload on this device: leave the driver alone
+	[ "$avail" = 1 ] || return 1
 	[ "$enabled" = 1 ] && want=Y || want=N
 
 	# Nothing to do without the driver, or when it already matches.
@@ -204,6 +219,7 @@ mlo_apply() {
 }
 
 start_service() {
+	npu_detect
 	mss_apply
 	txop_apply
 	mlo_apply

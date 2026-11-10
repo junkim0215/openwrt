@@ -93,3 +93,17 @@ define Device/iptime_be5100m
 	pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += iptime_be5100m
+
+define Device/iptime_be3600p
+  DEVICE_VENDOR := ipTIME
+  DEVICE_MODEL := BE3600plus
+  DEVICE_DTS := an7563-iptime-be3600p
+  DEVICE_PACKAGES := an7552-npu-firmware kmod-phy-airoha-en8811h nand-utils
+  KERNEL_LOADADDR := 0x80088000
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL := kernel-bin | lzma | \
+	iptime-be-kernel $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  IMAGES :=
+endef
+TARGET_DEVICES += iptime_be3600p

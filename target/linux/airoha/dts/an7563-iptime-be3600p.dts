@@ -13,7 +13,7 @@
  * ipTIME BE3600plus: 256 MiB RAM, MT7990 (14c3:7993 + 14c3:799b) with its
  * EEPROM at Factory 0x0, WAN on switch port 4, no EN8811H. The port MACs
  * are set from Factory 0x4 by 02_network (LAN -2, WAN -1).
- * Every partition is still read-only (RAM boot bring-up).
+ * OpenWrt lives in tclinux_slave; everything else stays read-only.
  */
 
 / {
@@ -204,10 +204,12 @@
 			read-only;
 		};
 
+		/* OpenWrt lives here: FIP + HDR2 (0x2100), then the FIT. */
 		partition@2d00000 {
+			compatible = "denx,fit";
 			label = "tclinux_slave";
 			reg = <0x2d00000 0x2800000>;
-			read-only;
+			openwrt,fit-offset = <0x2100>;
 		};
 	};
 };

@@ -1,22 +1,31 @@
 'use strict';
 'require view';
 'require form';
+'require uci';
 
 return view.extend({
+	load: function() {
+		return uci.load('an7552-npu');
+	},
+
 	render: function() {
 		var m, s, o;
 
 		m = new form.Map('an7552-npu', _('Advanced settings'));
 
-		s = m.section(form.NamedSection, 'settings', 'npu', _('Wi-Fi NPU acceleration'),
-			_('With the NPU on, traffic between Wi-Fi and the wired ports is forwarded by the NPU in hardware instead of the CPU.') + '<br /><br />' +
-			_('With the NPU off, all Wi-Fi traffic goes through the CPU.') + '<br /><br />' +
-			_('Applying a change restarts Wi-Fi for a few seconds.'));
+		/* Hidden when the device has no Wi-Fi NPU offload (set by
+		 * /etc/init.d/an7552-npu from the device tree). */
+		if (uci.get('an7552-npu', 'settings', 'available') != '0') {
+			s = m.section(form.NamedSection, 'settings', 'npu', _('Wi-Fi NPU acceleration'),
+				_('With the NPU on, traffic between Wi-Fi and the wired ports is forwarded by the NPU in hardware instead of the CPU.') + '<br /><br />' +
+				_('With the NPU off, all Wi-Fi traffic goes through the CPU.') + '<br /><br />' +
+				_('Applying a change restarts Wi-Fi for a few seconds.'));
 
-		o = s.option(form.Flag, 'enabled', _('Use the NPU'),
-			_('On: hardware forwarding between Wi-Fi and the wired ports. Off: all Wi-Fi traffic goes through the CPU.'));
-		o.default = o.enabled;
-		o.rmempty = false;
+			o = s.option(form.Flag, 'enabled', _('Use the NPU'),
+				_('On: hardware forwarding between Wi-Fi and the wired ports. Off: all Wi-Fi traffic goes through the CPU.'));
+			o.default = o.enabled;
+			o.rmempty = false;
+		}
 
 		s = m.section(form.NamedSection, 'wifi', 'wifi', _('Wi-Fi latency'));
 

@@ -5,13 +5,15 @@
 /memreserve/ 0x80000000 0x88000;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
 #include "an7563.dtsi"
 
 /*
- * ipTIME BE3600plus, first bring-up for RAM boot only: 256 MiB RAM,
- * MT7990 (14c3:7993 + 14c3:799b) on pcie0/pcie1 with its calibration in
- * "art". Wi-Fi, LEDs, buttons and USB are left out until the hardware is
- * checked, and every partition is read-only.
+ * ipTIME BE3600plus: 256 MiB RAM, MT7990 (14c3:7993 + 14c3:799b) with its
+ * EEPROM at Factory 0x0, WAN on switch port 4, no EN8811H. The port MACs
+ * are set from Factory 0x4 by 02_network (LAN -2, WAN -1).
+ * Every partition is still read-only (RAM boot bring-up).
  */
 
 / {
@@ -20,6 +22,10 @@
 
 	aliases {
 		serial0 = &uart1;
+		led-boot = &led_status;
+		led-failsafe = &led_status;
+		led-running = &led_status;
+		led-upgrade = &led_status;
 	};
 
 	chosen {
@@ -47,6 +53,39 @@
 			no-map;
 		};
 	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		reset {
+			label = "reset";
+			gpios = <&an7563_pinctrl 25 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_RESTART>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_status: led-status {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_BLUE>;
+			gpios = <&an7563_pinctrl 21 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+		};
+
+		led-wlan-2g {
+			function = LED_FUNCTION_WLAN_2GHZ;
+			color = <LED_COLOR_ID_BLUE>;
+			gpios = <&an7563_pinctrl 1 GPIO_ACTIVE_LOW>;
+		};
+
+		led-wlan-5g {
+			function = LED_FUNCTION_WLAN_5GHZ;
+			color = <LED_COLOR_ID_BLUE>;
+			gpios = <&an7563_pinctrl 12 GPIO_ACTIVE_LOW>;
+		};
+	};
 };
 
 &an7563_pinctrl {
@@ -70,6 +109,23 @@
 &pcie0 {
 	ranges = <0x82000000 0 0x20000000 0x20000000 0 0x4000000>;
 	status = "okay";
+
+	pcie@0,0 {
+		device_type = "pci";
+		reg = <0x0000 0 0 0 0>;
+		#address-cells = <3>;
+		#size-cells = <2>;
+		ranges;
+
+		wifi@0,0 {
+			compatible = "pci14c3,7993";
+			airoha,npu = <&npu>;
+			airoha,eth = <&eth>;
+			reg = <0x0000 0 0 0 0>;
+			nvmem-cells = <&wifi_eeprom>;
+			nvmem-cell-names = "eeprom";
+		};
+	};
 };
 
 &pcie1 {
@@ -118,6 +174,16 @@
 			label = "Factory";
 			reg = <0x100000 0x400000>;
 			read-only;
+
+			nvmem-layout {
+				compatible = "fixed-layout";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				wifi_eeprom: eeprom@0 {
+					reg = <0x0 0x1e00>;
+				};
+			};
 		};
 
 		partition@500000 {
@@ -146,26 +212,6 @@
 	};
 };
 
-&hsgmii_pcs {
-	status = "okay";
-};
-
-/* Probe for an EN8811H like on the BE5100M; stock loads its driver too. */
-&gsw_mdio {
-	phy_2p5g: ethernet-phy@f {
-		compatible = "ethernet-phy-id03a2.a411";
-		reg = <15>;
-		reset-gpios = <&an7563_pinctrl 13 GPIO_ACTIVE_LOW>;
-		reset-assert-us = <1000000>;
-		reset-deassert-us = <100000>;
-	};
-};
-
-&gdm2 {
-	phy-handle = <&phy_2p5g>;
-	status = "okay";
-};
-
 &switch {
 	status = "okay";
 };
@@ -186,6 +232,91 @@
 };
 
 &gsw_port4 {
-	label = "lan4";
+	label = "wan";
 	status = "okay";
+};
+
+/* Port LEDs are driven by the PHYs and are active-low on this board. */
+&gsw_phy1 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
+};
+
+&gsw_phy2 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
+};
+
+&gsw_phy3 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
+};
+
+&gsw_phy4 {
+	leds {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@0 {
+			reg = <0>;
+			function = LED_FUNCTION_WAN;
+			function-enumerator = <0>;
+			active-low;
+		};
+
+		led@1 {
+			reg = <1>;
+			function = LED_FUNCTION_WAN;
+			function-enumerator = <1>;
+			active-low;
+		};
+	};
 };

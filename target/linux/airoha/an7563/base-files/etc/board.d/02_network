@@ -28,7 +28,15 @@ an7563_setup_interfaces()
 		ucidef_set_interface_macaddr "wan" "$wan_mac"
 		ucidef_set_label_macaddr "$wan_mac"
 		;;
-	iptime,be5100m|iptime,be3600p)
+	iptime,be3600p)
+		# WAN is switch port 4. The stock MACs are below the two in the
+		# Wi-Fi EEPROM at Factory 0x4: LAN = -2, WAN = -1
+		local base_mac=$(mtd_get_mac_binary Factory 0x4)
+		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+		ucidef_set_interface_macaddr "lan" "$(macaddr_add "$base_mac" -2)"
+		ucidef_set_interface_macaddr "wan" "$(macaddr_add "$base_mac" -1)"
+		;;
+	iptime,be5100m)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "eth1"
 		;;
 	*)

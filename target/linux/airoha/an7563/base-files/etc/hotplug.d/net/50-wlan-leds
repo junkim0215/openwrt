@@ -5,7 +5,7 @@
 . /usr/share/libubox/jshn.sh
 
 [ "$ACTION" = add ] || exit 0
-[ "$(board_name)" = "iptime,be5100m" ] || exit 0
+case "$(board_name)" in iptime,be5100m|iptime,be3600p) ;; *) exit 0 ;; esac
 case "$INTERFACE" in
 phy*-ap*|wlan*) ;;
 *) exit 0 ;;

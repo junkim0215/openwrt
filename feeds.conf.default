@@ -11,3 +11,7 @@ src-git zapret https://github.com/remittor/zapret-openwrt.git^1b04a87558ec7965bf
 src-git podkop https://github.com/itdoginfo/podkop.git^da8bd40983aaab4d29614d38c8d6214d0a217e3e
 src-git youtubeUnblock https://github.com/Waujito/youtubeUnblock.git^ac46b81abb03b839a524036982f4a8eb5fb2faf9
 src-git nikki https://github.com/nikkinikki-org/OpenWrt-nikki.git^31339d53b454f575082dc4e16510c96858e01921
+src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git^b094b79c32ac4e4de3113a5c44971c6182eee535
+src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git^aada0ff42f2437b35be36b44acbb462be35306e0
+src-git passwall2 https://github.com/Openwrt-Passwall/openwrt-passwall2.git^dd77a236c7ee46b2b3899e1951668fdc88c13c57
+src-git openclash https://github.com/vernesong/OpenClash.git^e553e82e01c697aefbe1555261a503f425e00ccd

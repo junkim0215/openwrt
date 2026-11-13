@@ -68,8 +68,8 @@ endef
 
 # Stock dual-image layout: OpenWrt goes to tclinux_slave (bootflag 1), the
 # stock firmware stays in tclinux. slot.bin is written there from U-Boot,
-# factory.bin is the same with the header the stock web UI expects (rename
-# it to *_16_006.bin, the web UI reads the version from the file name).
+# factory_16_006.bin is the same with the header the stock web UI expects
+# (the web UI reads the version from the "_16_006" in the file name).
 define Device/iptime_be5100m
   DEVICE_VENDOR := ipTIME
   DEVICE_MODEL := BE5100M
@@ -85,9 +85,9 @@ define Device/iptime_be5100m
   PAGESIZE := 2048
   KERNEL := kernel-bin | lzma | \
 	iptime-be-kernel $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
-  IMAGES := slot.bin factory.bin sysupgrade.bin
+  IMAGES := slot.bin factory_16_006.bin sysupgrade.bin
   IMAGE/slot.bin := append-kernel | pad-to 128k | append-rootfs | pad-rootfs
-  IMAGE/factory.bin := append-kernel | pad-to 128k | append-rootfs | \
+  IMAGE/factory_16_006.bin := append-kernel | pad-to 128k | append-rootfs | \
 	pad-rootfs | iptime-be-webhdr be5100m 16_006
   IMAGE/sysupgrade.bin := append-kernel | pad-to 128k | append-rootfs | \
 	pad-rootfs | append-metadata

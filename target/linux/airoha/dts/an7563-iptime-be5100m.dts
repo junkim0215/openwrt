@@ -5,6 +5,7 @@
 /memreserve/ 0x80000000 0x88000;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
 #include <dt-bindings/phy/phy.h>
 #include <dt-bindings/phy/airoha,an7581-usb-phy.h>
 #include "an7563.dtsi"
@@ -15,6 +16,10 @@
 
 	aliases {
 		serial0 = &uart1;
+		led-boot = &led_status;
+		led-failsafe = &led_status;
+		led-running = &led_status;
+		led-upgrade = &led_status;
 	};
 
 	chosen {
@@ -316,10 +321,26 @@
 };
 
 / {
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			gpios = <&an7563_pinctrl 0 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_RESTART>;
+		};
+
+		key-wps {
+			label = "wps";
+			gpios = <&an7563_pinctrl 5 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_WPS_BUTTON>;
+		};
+	};
+
 	leds {
 		compatible = "gpio-leds";
 
-		led-status {
+		led_status: led-status {
 			function = LED_FUNCTION_STATUS;
 			color = <LED_COLOR_ID_BLUE>;
 			gpios = <&an7563_pinctrl 20 GPIO_ACTIVE_LOW>;

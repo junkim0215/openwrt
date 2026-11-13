@@ -78,7 +78,8 @@ define Device/iptime_be5100m
 	kmod-mt7996e kmod-mt7992-23-firmware wpad-mbedtls iw nand-utils \
 	kmod-usb3 kmod-usb-storage block-mount \
 	kmod-fs-exfat kmod-fs-ext4 kmod-fs-ntfs3 kmod-fs-vfat \
-	kmod-nls-cp437 kmod-nls-iso8859-1 kmod-nls-utf8 luci luci-app-an7552-npu luci-theme-argon luci-app-be5000-temp
+	kmod-nls-cp437 kmod-nls-iso8859-1 kmod-nls-utf8 luci luci-app-an7552-npu luci-theme-argon luci-app-be5000-temp \
+	uboot-envtools
   KERNEL_LOADADDR := 0x80088000
   BLOCKSIZE := 128k
   PAGESIZE := 2048

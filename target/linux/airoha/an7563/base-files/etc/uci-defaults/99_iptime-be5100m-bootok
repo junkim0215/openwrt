@@ -7,6 +7,16 @@
 
 [ "$(board_name)" = iptime,be5100m ] || exit 0
 
+# Images r114 to r127 had no uboot-envtools. An upgrade from them keeps
+# /etc/config/ubootenv (written by r113) but not /etc/fw_env.config, and
+# 30_uboot-envtools skips when the config exists. Write the file again
+# from the kept config.
+if [ ! -e /etc/fw_env.config ] && [ -e /etc/config/ubootenv ]; then
+	. /lib/uboot-envtools.sh
+	config_load ubootenv
+	config_foreach ubootenv_add_app_config
+fi
+
 /etc/init.d/be5100m-bootok enable
 
 exit 0

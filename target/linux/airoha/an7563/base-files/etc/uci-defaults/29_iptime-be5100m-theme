@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Keep Bootstrap as the default LuCI theme on the BE5100M. Argon is still
+# shipped and can be selected in System > System > Language and Style.
+# luci-theme-argon (30_luci-theme-argon) switches to itself only when its
+# theme entry does not exist yet, so register the entry first. On upgrades
+# with kept settings the entry already exists and nothing changes.
+
+. /lib/functions.sh
+
+[ "$(board_name)" = iptime,be5100m ] || exit 0
+
+uci -q get luci.themes.Argon >/dev/null && exit 0
+
+uci batch <<-EOT
+	set luci.themes.Argon=/luci-static/argon
+	commit luci
+EOT
+
+exit 0

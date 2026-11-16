@@ -62,6 +62,12 @@
 			gpios = <&an7563_pinctrl 25 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_RESTART>;
 		};
+
+		wps {
+			label = "wps";
+			gpios = <&an7563_pinctrl 5 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_WPS_BUTTON>;
+		};
 	};
 
 	leds {

@@ -1,0 +1,32 @@
+From: Jun-Hyuk Kim <junhyukkim38@gmail.com>
+Subject: [PATCH] wifi: mt76: mt7996: fill TXD by host on MT7990
+
+When the firmware fills the TXD of 802.3 unicast frames on MT7990, the
+AP can get stuck sending to its clients at a low rate: iw reports a tx
+bitrate of 6.0 MBit/s and iperf3 drops from about 750 to 68 Mbit/s
+until the interface is restarted. Let the host fill the TXD on MT7990.
+
+Based on the fix by kyoto44 (openwrt/mt76 #1043, #1065), as carried in
+the Beryl7 (GL-MT3600BE) build.
+---
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -1133,7 +1133,7 @@
+ 	pid = mt76_tx_status_skb_add(mdev, wcid, tx_info->skb);
+ 	memset(txwi_ptr, 0, MT_TXD_SIZE);
+ 	/* Transmit non qos data by 802.11 header and need to fill txd by host*/
+-	if (!is_8023 || pid >= MT_PACKET_ID_FIRST)
++	if (!is_8023 || pid >= MT_PACKET_ID_FIRST || is_mt7990(&dev->mt76))
+ 		mt7996_mac_write_txwi(dev, txwi_ptr, tx_info->skb, wcid, key,
+ 				      pid, qid, 0, link_id);
+ 
+@@ -1185,7 +1185,8 @@
+ 
+ 		txp->fw.flags = cpu_to_le16(MT_CT_INFO_FROM_HOST);
+ 
+-		if (!is_8023 || pid >= MT_PACKET_ID_FIRST)
++		if (!is_8023 || pid >= MT_PACKET_ID_FIRST ||
++		    is_mt7990(&dev->mt76))
+ 			txp->fw.flags |= cpu_to_le16(MT_CT_INFO_APPLY_TXD);
+ 
+ 		if (!key)

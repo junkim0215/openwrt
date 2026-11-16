@@ -100,13 +100,15 @@ define Device/iptime_be3600p
   DEVICE_DTS := an7563-iptime-be3600p
   DEVICE_PACKAGES := an7552-npu-firmware kmod-mt7996e kmod-mt7990-firmware \
 	wpad-mbedtls iw nand-utils luci luci-app-an7552-npu luci-theme-argon \
-	luci-app-be5000-temp
+	luci-app-be5000-temp uboot-envtools
   KERNEL_LOADADDR := 0x80088000
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL := kernel-bin | lzma | \
 	iptime-be-kernel $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
-  IMAGES := slot.bin sysupgrade.bin
+  IMAGES := slot.bin factory_16_006.bin sysupgrade.bin
+  IMAGE/factory_16_006.bin := append-kernel | pad-to 128k | append-rootfs | \
+	pad-rootfs | iptime-be-webhdr be3600p 16_006
   IMAGE/slot.bin := append-kernel | pad-to 128k | append-rootfs | pad-rootfs
   IMAGE/sysupgrade.bin := append-kernel | pad-to 128k | append-rootfs | \
 	pad-rootfs | append-metadata

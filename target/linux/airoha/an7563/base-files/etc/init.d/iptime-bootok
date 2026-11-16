@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+# The stock U-Boot of the ipTIME BE routers counts boot attempts after a
+# web firmware update ("boot_try" in its environment) and falls back to the
+# other slot when the booted system never clears it. The stock firmware
+# clears it once it is up; do the same here so that the next boot stays.
+
+START=99
+
+start() {
+	. /lib/functions.sh
+	case "$(board_name)" in
+	iptime,be3600p|iptime,be5100m) ;;
+	*) return 0 ;;
+	esac
+	fw_printenv boot_try > /dev/null 2>&1 || return 0
+	if fw_setenv boot_try; then
+		logger -t iptime-bootok "cleared boot_try"
+	else
+		logger -t iptime-bootok "could not clear boot_try"
+	fi
+}

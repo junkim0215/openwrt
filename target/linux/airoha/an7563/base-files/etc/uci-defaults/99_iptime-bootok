@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-only
 #
 # Enable the boot_try clean-up of the stock U-Boot (see
-# /etc/init.d/be5100m-bootok).
+# /etc/init.d/iptime-bootok).
 
 . /lib/functions.sh
 
-[ "$(board_name)" = iptime,be5100m ] || exit 0
+case "$(board_name)" in
+iptime,be3600p|iptime,be5100m) ;;
+*) exit 0 ;;
+esac
 
 # Images r114 to r127 had no uboot-envtools. An upgrade from them keeps
 # /etc/config/ubootenv (written by r113) but not /etc/fw_env.config, and
@@ -17,6 +20,6 @@ if [ ! -e /etc/fw_env.config ] && [ -e /etc/config/ubootenv ]; then
 	config_foreach ubootenv_add_app_config
 fi
 
-/etc/init.d/be5100m-bootok enable
+/etc/init.d/iptime-bootok enable
 
 exit 0

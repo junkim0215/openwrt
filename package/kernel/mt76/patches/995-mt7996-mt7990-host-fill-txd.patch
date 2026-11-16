@@ -1,0 +1,22 @@
+From: Jun-Hyuk Kim <junhyukkim38@gmail.com>
+Subject: [PATCH] wifi: mt76: mt7996: fill TXD by host on MT7990
+
+When the firmware fills the TXD of 802.3 unicast frames on MT7990, the
+AP can get stuck sending to its clients at a low rate: iw reports a tx
+bitrate of 6.0 MBit/s and iperf3 drops from about 750 to 68 Mbit/s
+until the interface is restarted. Let the host fill the TXD on MT7990.
+
+Based on the fix by kyoto44 (openwrt/mt76 #1043, #1065), as carried in
+the Beryl7 (GL-MT3600BE) build.
+---
+--- a/mt7996/mac.c
++++ b/mt7996/mac.c
+@@ -1266,6 +1266,8 @@
+ 	memset(txwi_ptr, 0, MT_TXD_SIZE);
+ 	/* Transmit non qos data by 802.11 header and need to fill txd by host*/
+ 	host_txd |= pid >= MT_PACKET_ID_FIRST;
++	/* MT7990: firmware-filled TXD can leave the AP stuck at a low rate */
++	host_txd |= is_mt7990(&dev->mt76);
+ 	if (host_txd)
+ 		mt7996_mac_write_txwi(dev, txwi_ptr, tx_info->skb, wcid, key,
+ 				      pid, qid, 0, link_id);

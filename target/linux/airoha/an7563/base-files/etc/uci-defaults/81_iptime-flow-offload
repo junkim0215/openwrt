@@ -1,0 +1,22 @@
+. /lib/functions.sh
+
+# Routing offload: Wi-Fi <-> WAN goes through the PPE instead of the CPU,
+# as on the Xiaomi BE5000 (15_xiaomi-be5000-flow-offload).
+# Only on a router (an access point has no wan) and only once, so that a
+# later choice in LuCI stays.
+case "$(board_name)" in
+iptime,be3600p|iptime,be5100m) ;;
+*) exit 0 ;;
+esac
+[ "$(uci -q get an7552-npu.settings.offload_default)" = 1 ] && exit 0
+uci -q get network.wan >/dev/null || exit 0
+if [ -z "$(uci -q get firewall.@defaults[0].flow_offloading)" ]; then
+	uci set firewall.@defaults[0].flow_offloading=1
+	uci set firewall.@defaults[0].flow_offloading_hw=1
+	uci commit firewall
+fi
+if uci -q get an7552-npu.settings >/dev/null; then
+	uci set an7552-npu.settings.offload_default=1
+	uci commit an7552-npu
+fi
+exit 0

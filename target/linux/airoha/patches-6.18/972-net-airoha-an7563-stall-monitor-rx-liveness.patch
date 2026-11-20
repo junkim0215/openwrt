@@ -1,0 +1,126 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: AN7563 stall monitor: a frozen PPE queue needs a silent RX
+
+The stall monitor treats a PPE1 output queue that reads the same non-zero
+page count in three one-second samples as a dead PPE and resets the frame
+engine. Under a saturated CPU the queue reads like that while frames keep
+flowing, and the monitor resets a working datapath.
+
+Xiaomi BE5000, iperf3 from the router to a 2.5G peer, same scenario on each
+build, recoveries per phase:
+
+                               direct TCP send   AmneziaWG tunnel
+  20261109 release              0 in 150 s        3 in 36 s
+  + TX checksum and SG off      0 in 150 s        2 in 36 s
+  + TX checksum and SG on       3 in 150 s        0 in 36 s
+
+Every log line shows the input queues far below the limit and the PPE1
+queue between 9 and 186 pages. Throughput in the runs with a recovery is
+within a few percent of the others (391 against 396-408 Mbit/s in the
+tunnel), which a datapath frozen for three seconds would not give.
+
+Every ingress frame leaves through that queue, so count the frames the RX
+NAPI hands to the stack and take a frozen queue for a stall only while the
+CPU receives next to nothing. debugfs gains rx_frames and oq_stuck_ignored,
+the number of samples this check discarded.
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1130,6 +1130,12 @@
+ 		done += cur;
+ 	} while (cur && done < budget);
+ 
++	/* a liveness hint for the AN7563 stall monitor: a lost update from
++	 * a concurrent NAPI does not matter
++	 */
++	if (done)
++		q->qdma->eth->rx_frames += done;
++
+ 	if (done < budget && napi_complete(napi)) {
+ 		struct airoha_qdma *qdma = q->qdma;
+ 		int i, qid = q - &qdma->q_rx[0];
+@@ -2269,9 +2275,18 @@
+  * PPE no longer takes anything. Treat a frozen non-zero PPE1 output queue
+  * as a stall as well. Both need an open port, since frames park in the PSE
+  * before the ports come up.
++ *
++ * Under a saturated CPU the PPE1 output queue also reads the same non-zero
++ * page count for seconds while frames keep flowing: iperf3 from the router
++ * at 1.2 Gbit/s, or through an AmneziaWG tunnel at 400 Mbit/s, triggered a
++ * needless recovery every 10-40 s with no drop in throughput before it.
++ * Every ingress frame leaves through that queue, so frames reaching the RX
++ * NAPI mean the PPE is taking them: a frozen queue counts only while the
++ * CPU receives next to nothing.
+  */
+ #define AIROHA_AN7563_PSE_IQ_STALL_PAGES	0xa0
+ #define AIROHA_AN7563_PSE_OQ_STUCK_PAGES	8
++#define AIROHA_AN7563_PSE_OQ_RX_ALIVE		100	/* frames per sample */
+ #define AIROHA_AN7563_STALL_SAMPLES		3
+ 
+ /* When the QDMA RX DMA is wedged in a transaction the QDMA refuses to
+@@ -2470,6 +2485,7 @@
+ 	eth->recoveries++;
+ 	eth->irq_events_seen = eth->irq_events;
+ 	eth->ppe_oq_pages_seen = 0;
++	eth->rx_frames_seen = eth->rx_frames;
+ 	eth->stall_samples = 0;
+ 	dev_info(eth->dev, "frame engine recovered (%u so far): PSE IQ %08x %08x QDMA %08x\n",
+ 		 eth->recoveries, airoha_fe_rr(eth, REG_PSE_IQ_STA1),
+@@ -2599,10 +2615,13 @@
+ 					      stall_work.work);
+ 	u32 irq_events = READ_ONCE(eth->irq_events);
+ 	bool idle = irq_events == eth->irq_events_seen;
++	u32 rx_frames = READ_ONCE(eth->rx_frames);
++	u32 rx_delta = rx_frames - eth->rx_frames_seen;
+ 	u32 pages, busy, ppe_oq;
+ 	bool iq_full, oq_stuck;
+ 
+ 	eth->irq_events_seen = irq_events;
++	eth->rx_frames_seen = rx_frames;
+ 	if (!test_bit(DEV_STATE_INITIALIZED, &eth->state))
+ 		goto out;
+ 
+@@ -2615,6 +2634,10 @@
+ 	oq_stuck = ppe_oq > AIROHA_AN7563_PSE_OQ_STUCK_PAGES &&
+ 		   ppe_oq == eth->ppe_oq_pages_seen;
+ 	eth->ppe_oq_pages_seen = ppe_oq;
++	if (oq_stuck && rx_delta > AIROHA_AN7563_PSE_OQ_RX_ALIVE) {
++		eth->oq_stuck_ignored++;
++		oq_stuck = false;
++	}
+ 
+ 	if ((iq_full || oq_stuck) && airoha_an7563_ports_open(eth))
+ 		eth->stall_samples++;
+@@ -2650,6 +2673,9 @@
+ 			    &airoha_an7563_recover_fops);
+ 	debugfs_create_u32("recoveries", 0400, dir, &eth->recoveries);
+ 	debugfs_create_u32("irq_events", 0400, dir, &eth->irq_events);
++	debugfs_create_u32("rx_frames", 0400, dir, &eth->rx_frames);
++	debugfs_create_u32("oq_stuck_ignored", 0400, dir,
++			   &eth->oq_stuck_ignored);
+ 	debugfs_create_bool("wedged", 0400, dir, &eth->stall_wedged);
+ 	debugfs_create_u32("pse_fq_empty", 0400, dir, &eth->pse_fq_empty);
+ 	debugfs_create_u32("pse_fc_drop", 0400, dir, &eth->pse_fc_drop);
+@@ -2674,6 +2700,7 @@
+ 
+ 	INIT_DELAYED_WORK(&eth->stall_work, airoha_an7563_stall_work);
+ 	eth->irq_events_seen = eth->irq_events;
++	eth->rx_frames_seen = eth->rx_frames;
+ 	schedule_delayed_work(&eth->stall_work, HZ);
+ 	airoha_an7563_stall_debugfs_init(eth);
+ }
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -708,6 +708,12 @@
+ 	u32 irq_events;
+ 	u32 irq_events_seen;
+ 	u32 ppe_oq_pages_seen;
++	/* frames the RX NAPI handed to the stack: the PPE is alive while
++	 * this moves
++	 */
++	u32 rx_frames;
++	u32 rx_frames_seen;
++	u32 oq_stuck_ignored;
+ 	int stall_samples;
+ 	u32 recoveries;
+ 	bool stall_wedged;

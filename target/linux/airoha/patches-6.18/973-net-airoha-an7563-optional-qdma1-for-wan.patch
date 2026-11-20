@@ -1,0 +1,176 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: AN7563: optional QDMA1 for the WAN port CPU traffic
+
+On AN7563 every netdev sends and receives its CPU traffic through QDMA0,
+so all of it is handled on one interrupt and one CPU. The stock firmware
+uses QDMA0 (qdma_lan.ko, GIC 69) for the LAN ports and QDMA1 with CDM2
+(qdma_wan.ko, GIC 70) for the WAN port, and puts the two on different CPUs
+when it has no Wi-Fi to place.
+
+Let the WAN port (GDM2) use QDMA1 like on the other SoCs. Experimental and
+off by default: write 1 to /sys/kernel/debug/airoha_fe_stall/wan_qdma1 to
+move the port over at run time, 0 to move it back. The TX reclaim of the
+stall monitor now covers both QDMA blocks. The frame engine recovery still
+resets QDMA0 only.
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2295,6 +2295,19 @@
+  */
+ static bool airoha_an7563_reboot_on_wedge = true;
+ module_param_named(reboot_on_wedge, airoha_an7563_reboot_on_wedge, bool, 0644);
++
++/* The stock firmware runs the CPU traffic of the WAN port (GDM2) through
++ * QDMA1 and CDM2 (qdma_wan.ko) and that of the LAN ports through QDMA0, on
++ * separate interrupts. Experimental and off by default: write 1 to
++ * /sys/kernel/debug/airoha_fe_stall/wan_qdma1 to move the WAN port over.
++ */
++static bool airoha_an7563_wan_qdma1;
++module_param_named(wan_qdma1, airoha_an7563_wan_qdma1, bool, 0444);
++MODULE_PARM_DESC(wan_qdma1,
++		 "AN7563: WAN port CPU traffic through QDMA1 (default: no)");
++
++static struct airoha_gdm_dev *airoha_get_wan_gdm_dev(struct airoha_eth *eth);
++static void airoha_dev_set_qdma(struct airoha_gdm_dev *dev);
+ MODULE_PARM_DESC(reboot_on_wedge,
+ 		 "AN7563: reboot when the frame engine cannot be recovered (default: yes)");
+ 
+@@ -2504,16 +2517,16 @@
+  * is set, or all of them when the hardware has consumed the whole ring
+  * (CPU index == DMA index).
+  */
+-static void airoha_an7563_tx_reclaim(struct airoha_eth *eth)
++static u32 airoha_an7563_tx_reclaim_qdma(struct airoha_eth *eth, int id)
+ {
+-	struct airoha_qdma *qdma = &eth->qdma[0];
++	struct airoha_qdma *qdma = &eth->qdma[id];
+ 	struct airoha_queue *q = &qdma->q_tx[0];
+-	u32 cpu, dma, n = 0;
++	u32 cpu, dma, n = 0, queued;
+ 	bool idle, settled;
+ 	int i;
+ 
+ 	if (!q->ndesc)
+-		return;
++		return 0;
+ 
+ 	spin_lock_bh(&q->lock);
+ 
+@@ -2527,10 +2540,10 @@
+ 	 * entries still in flight a whole tick after the hardware went idle,
+ 	 * with nothing queued in between, are lost
+ 	 */
+-	settled = idle && q->queued && cpu == eth->tx_reclaim_cpu &&
+-		  q->queued == eth->tx_reclaim_queued;
+-	eth->tx_reclaim_cpu = cpu;
+-	eth->tx_reclaim_queued = q->queued;
++	settled = idle && q->queued && cpu == eth->tx_reclaim_cpu[id] &&
++		  q->queued == eth->tx_reclaim_queued[id];
++	eth->tx_reclaim_cpu[id] = cpu;
++	eth->tx_reclaim_queued[id] = q->queued;
+ 
+ 	for (i = 0; settled && i < q->ndesc && q->queued; i++) {
+ 		struct airoha_queue_entry *e = &q->entry[i];
+@@ -2565,7 +2578,7 @@
+ 		}
+ 	}
+ 
+-	eth->tx_queued = q->queued;
++	queued = q->queued;
+ 	if (n) {
+ 		eth->tx_reclaimed += n;
+ 		if (q->txq_stopped && q->ndesc - q->queued >= q->free_thr)
+@@ -2576,9 +2589,21 @@
+ 
+ 	if (n)
+ 		dev_info_ratelimited(eth->dev,
+-				     "reclaimed %u TX descriptors (%u so far, ring %s, %u queued)\n",
+-				     n, eth->tx_reclaimed, idle ? "idle" : "busy",
+-				     eth->tx_queued);
++				     "reclaimed %u TX descriptors on QDMA%d (%u so far, ring %s, %u queued)\n",
++				     n, id, eth->tx_reclaimed,
++				     idle ? "idle" : "busy", queued);
++
++	return queued;
++}
++
++static void airoha_an7563_tx_reclaim(struct airoha_eth *eth)
++{
++	u32 queued = 0;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
++		queued += airoha_an7563_tx_reclaim_qdma(eth, i);
++	eth->tx_queued = queued;
+ }
+ 
+ /* count and clear the PSE events the stock driver reports */
+@@ -2665,6 +2690,32 @@
+ DEFINE_DEBUGFS_ATTRIBUTE(airoha_an7563_recover_fops, NULL,
+ 			 airoha_an7563_recover_set, "%llu\n");
+ 
++static int airoha_an7563_wan_qdma1_get(void *data, u64 *val)
++{
++	*val = airoha_an7563_wan_qdma1;
++
++	return 0;
++}
++
++static int airoha_an7563_wan_qdma1_set(void *data, u64 val)
++{
++	struct airoha_eth *eth = data;
++	struct airoha_gdm_dev *dev;
++
++	rtnl_lock();
++	airoha_an7563_wan_qdma1 = !!val;
++	dev = airoha_get_wan_gdm_dev(eth);
++	if (dev)
++		airoha_dev_set_qdma(dev);
++	rtnl_unlock();
++
++	return 0;
++}
++
++DEFINE_DEBUGFS_ATTRIBUTE(airoha_an7563_wan_qdma1_fops,
++			 airoha_an7563_wan_qdma1_get,
++			 airoha_an7563_wan_qdma1_set, "%llu\n");
++
+ static void airoha_an7563_stall_debugfs_init(struct airoha_eth *eth)
+ {
+ 	struct dentry *dir = debugfs_create_dir("airoha_fe_stall", NULL);
+@@ -2677,6 +2728,8 @@
+ 	debugfs_create_u32("oq_stuck_ignored", 0400, dir,
+ 			   &eth->oq_stuck_ignored);
+ 	debugfs_create_bool("wedged", 0400, dir, &eth->stall_wedged);
++	debugfs_create_file("wan_qdma1", 0600, dir, eth,
++			    &airoha_an7563_wan_qdma1_fops);
+ 	debugfs_create_u32("pse_fq_empty", 0400, dir, &eth->pse_fq_empty);
+ 	debugfs_create_u32("pse_fc_drop", 0400, dir, &eth->pse_fc_drop);
+ 	debugfs_create_u32("pse_fc", 0400, dir, &eth->pse_fc);
+@@ -3206,8 +3259,11 @@
+ 	int i, ppe_id;
+ 
+ 	/* QDMA0 is used for lan ports while QDMA1 is used for WAN ports */
+-	qdma = &eth->qdma[eth->soc->version == 0x7563 ?
+-			 0 : !airoha_is_lan_gdm_dev(dev)];
++	if (eth->soc->version == 0x7563)
++		qdma = &eth->qdma[airoha_an7563_wan_qdma1 &&
++				  !airoha_is_lan_gdm_dev(dev)];
++	else
++		qdma = &eth->qdma[!airoha_is_lan_gdm_dev(dev)];
+ 	cur_qdma = airoha_qdma_deref(dev);
+ 
+ 	if (cur_qdma) {
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -732,8 +732,8 @@
+ 	u32 tx_report_stale;
+ 	u32 tx_report_late;
+ 	/* TX ring state at the previous monitor tick */
+-	u32 tx_reclaim_cpu;
+-	u32 tx_reclaim_queued;
++	u32 tx_reclaim_cpu[AIROHA_MAX_NUM_QDMA];
++	u32 tx_reclaim_queued[AIROHA_MAX_NUM_QDMA];
+ };
+ 
+ u32 airoha_rr(void __iomem *base, u32 offset);

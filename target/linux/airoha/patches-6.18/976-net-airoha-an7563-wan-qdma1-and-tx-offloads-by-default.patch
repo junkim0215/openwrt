@@ -1,0 +1,64 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: AN7563: WAN port on QDMA1 with TX offloads by default
+
+Run the WAN port (GDM2) through QDMA1 and turn on TX checksum offload,
+scatter-gather and TSO for it by default. Xiaomi BE5000, iperf3 from the
+router to a 2.5G peer over the WAN port, both QDMA interrupts on CPU0:
+
+                          before         after
+  send, 4 streams         576-597        1525 Mbit/s
+  send, 1 stream          543            863 Mbit/s
+  AmneziaWG send          405-411        440 Mbit/s
+  AmneziaWG receive       466            465 Mbit/s
+
+GDM1, the DSA conduit of the LAN ports, keeps its offloads off: they were
+not measured there, and the DSA user ports take no features from it.
+
+airoha_eth.wan_qdma1=0 on the kernel command line restores QDMA0 for the
+WAN port, which also drops TSO; ethtool -K eth1 changes the offloads.
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2315,13 +2315,14 @@
+ 
+ /* The stock firmware runs the CPU traffic of the WAN port (GDM2) through
+  * QDMA1 and CDM2 (qdma_wan.ko) and that of the LAN ports through QDMA0, on
+- * separate interrupts. Experimental and off by default: write 1 to
+- * /sys/kernel/debug/airoha_fe_stall/wan_qdma1 to move the WAN port over.
++ * separate interrupts, and TSO needs QDMA1 (see airoha_dev_fix_features()).
++ * airoha_eth.wan_qdma1=0 on the kernel command line keeps the WAN port on
++ * QDMA0; /sys/kernel/debug/airoha_fe_stall/wan_qdma1 moves it at run time.
+  */
+-static bool airoha_an7563_wan_qdma1;
++static bool airoha_an7563_wan_qdma1 = true;
+ module_param_named(wan_qdma1, airoha_an7563_wan_qdma1, bool, 0444);
+ MODULE_PARM_DESC(wan_qdma1,
+-		 "AN7563: WAN port CPU traffic through QDMA1 (default: no)");
++		 "AN7563: WAN port CPU traffic through QDMA1 (default: yes)");
+ 
+ static struct airoha_gdm_dev *airoha_get_wan_gdm_dev(struct airoha_eth *eth);
+ static void airoha_dev_set_qdma(struct airoha_gdm_dev *dev);
+@@ -5046,15 +5047,20 @@
+ 	netdev->features |= AIROHA_HW_FEATURES;
+ 	netdev->vlan_features = AIROHA_HW_FEATURES;
+ 	if (eth->soc->version == 0x7563) {
+-		/* TX checksum, scatter-gather and TSO are off by default:
+-		 * turn them on with ethtool -K. TSO needs QDMA1, see
+-		 * airoha_dev_fix_features().
++		/* TX checksum, scatter-gather and TSO are on for the WAN
++		 * port (GDM2), the one they were measured on, and off for
++		 * GDM1 behind the DSA switch; ethtool -K changes them. TSO
++		 * needs QDMA1, see airoha_dev_fix_features().
+ 		 */
+ 		netdev->hw_features = NETIF_F_HW_TC | NETIF_F_SG |
+ 				      NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+ 				      NETIF_F_TSO | NETIF_F_TSO6;
+ 		netdev->features &= ~(AIROHA_HW_FEATURES | NETIF_F_LRO);
+ 		netdev->features |= NETIF_F_HW_TC | NETIF_F_RXCSUM;
++		if (port->id == AIROHA_GDM2_IDX)
++			netdev->features |= NETIF_F_SG | NETIF_F_IP_CSUM |
++					    NETIF_F_IPV6_CSUM | NETIF_F_TSO |
++					    NETIF_F_TSO6;
+ 		netdev->vlan_features = 0;
+ 	}
+ 	SET_NETDEV_DEV(netdev, eth->dev);

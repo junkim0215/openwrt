@@ -1,0 +1,122 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: AN7563 TSO through QDMA1 with the PSE buffer estimate
+
+Hardware TSO on AN7563 segments correctly, but a TSO frame grows into its
+segments after the QDMA has checked the PSE for room for one frame. The
+AN7563 PSE has 1280 pages of 128 bytes (160 KB) and a 64 KB TSO frame
+needs about 540 of them, so whole runs of segments are dropped: the PSE
+drop counters at FE 0x11c/0x120/0x188 grow by exactly the number of TCP
+retransmissions, and a receiver-side trace shows 5-6 segments missing
+after every 7 received.
+
+The stock firmware sets PSE_BUF_ESTIMATE_EN in REG_PSE_BUF_USAGE_CFG of
+the WAN QDMA (qdma_wan.ko, 0x1028 reads 0xb000001a there; 0x9000001a on
+QDMA0). With the estimate the QDMA holds a frame back until the PSE has
+room for it. It has no effect on QDMA0.
+
+Set the estimate on QDMA1, offer TSO and TSO6 (off by default) and let
+airoha_dev_fix_features() drop them while the device is on QDMA0. Send
+TSO frames with ICO, TCO and TSO, without UCO, as the stock driver does.
+
+Xiaomi BE5000, iperf3 from the router to a 2.5G peer, WAN on QDMA1
+(wan_qdma1) on CPU1, TX checksum and SG on:
+
+                       TSO off              TSO on
+  1 stream             623 Mbit/s           870-890 Mbit/s
+  4 streams            1455 Mbit/s          1563-1783 Mbit/s
+  4 streams, CPU       95% / 44%            51% / 42%
+
+30 s runs with no frame engine recovery and no lost TX descriptors; three
+150 MB random files arrived with the right SHA-256. TSO with QDMA0, or
+with the estimate off on QDMA1: 2000-6000 retransmissions per 4 s.
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1961,6 +1961,12 @@
+ 				  TX_RING_IRQ_BLOCKING_MIN_TH_TXRING_EN_MASK);
+ 		airoha_qdma_clear(qdma, REG_QUEUE_CLOSE_CFG(0),
+ 				  TXQ_DISABLE_CHAN_QUEUE_MASK(0, 0));
++		/* PSE buffer estimate on the WAN QDMA, as in the stock
++		 * qdma_wan.ko (0x1028 reads 0xb000001a there)
++		 */
++		if (qdma == &qdma->eth->qdma[1])
++			airoha_qdma_set(qdma, REG_PSE_BUF_USAGE_CFG,
++					PSE_BUF_ESTIMATE_EN_MASK);
+ 
+ 		for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
+ 			if (!qdma->q_rx[i].ndesc)
+@@ -3469,6 +3475,17 @@
+ 	qdma = airoha_qdma_deref(dev);
+ 	if (qdma->users > 1)
+ 		features &= ~NETIF_F_LRO;
++
++	/* AN7563: a TSO frame grows into its segments after the QDMA has
++	 * checked the PSE for room for one frame. Without the PSE buffer
++	 * estimate the segments overflow the 160 KB PSE and whole runs of
++	 * them are dropped (thousands of retransmissions in seconds). The
++	 * estimate works on QDMA1 only, which is also where the stock
++	 * firmware enables it and runs the WAN port.
++	 */
++	if (dev->eth->soc->version == 0x7563 &&
++	    qdma != &dev->eth->qdma[1])
++		features &= ~(NETIF_F_TSO | NETIF_F_TSO6);
+ 
+ 	return features;
+ }
+@@ -3511,19 +3528,31 @@
+ 	 * on. The QDMA then fills in the IP, TCP and UDP checksums; the
+ 	 * stock driver clears the field first.
+ 	 *
+-	 * Hardware TSO (MSS in the TCP checksum field plus the TSO bit, as
+-	 * on the other SoCs) passes traffic on the AN7563 but loses
+-	 * segments: thousands of retransmissions in 8 s at any gso_max_size.
+-	 * It is not offered.
++	 * For TSO the QDMA takes the MSS from the TCP checksum field and
++	 * sets the IP and TCP checksums of every segment, like the stock
++	 * driver (ICO, TCO and TSO, no UCO). airoha_dev_fix_features()
++	 * offers TSO only on QDMA1, see there.
+ 	 */
+ 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+ 		if (skb_cow_head(skb, 0))
+ 			goto drop;
+ 
+-		*(__sum16 *)(skb_checksum_start(skb) + skb->csum_offset) = 0;
+-		msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_TCO_MASK, 1) |
+-			FIELD_PREP(QDMA_ETH_TXMSG_UCO_MASK, 1) |
+-			FIELD_PREP(QDMA_ETH_TXMSG_ICO_MASK, 1);
++		if (skb_is_gso(skb) &&
++		    (skb_shinfo(skb)->gso_type & (SKB_GSO_TCPV4 |
++						  SKB_GSO_TCPV6))) {
++			__be16 mss = cpu_to_be16(skb_shinfo(skb)->gso_size);
++
++			tcp_hdr(skb)->check = (__force __sum16)mss;
++			msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_TSO_MASK, 1) |
++				FIELD_PREP(QDMA_ETH_TXMSG_TCO_MASK, 1) |
++				FIELD_PREP(QDMA_ETH_TXMSG_ICO_MASK, 1);
++		} else {
++			*(__sum16 *)(skb_checksum_start(skb) +
++				     skb->csum_offset) = 0;
++			msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_TCO_MASK, 1) |
++				FIELD_PREP(QDMA_ETH_TXMSG_UCO_MASK, 1) |
++				FIELD_PREP(QDMA_ETH_TXMSG_ICO_MASK, 1);
++		}
+ 	}
+ 	tag = airoha_get_dsa_tag(skb, dev);
+ 	msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag);
+@@ -5017,11 +5046,13 @@
+ 	netdev->features |= AIROHA_HW_FEATURES;
+ 	netdev->vlan_features = AIROHA_HW_FEATURES;
+ 	if (eth->soc->version == 0x7563) {
+-		/* TX checksum and scatter-gather are off by default: turn
+-		 * them on with ethtool -K.
++		/* TX checksum, scatter-gather and TSO are off by default:
++		 * turn them on with ethtool -K. TSO needs QDMA1, see
++		 * airoha_dev_fix_features().
+ 		 */
+ 		netdev->hw_features = NETIF_F_HW_TC | NETIF_F_SG |
+-				      NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
++				      NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
++				      NETIF_F_TSO | NETIF_F_TSO6;
+ 		netdev->features &= ~(AIROHA_HW_FEATURES | NETIF_F_LRO);
+ 		netdev->features |= NETIF_F_HW_TC | NETIF_F_RXCSUM;
+ 		netdev->vlan_features = 0;

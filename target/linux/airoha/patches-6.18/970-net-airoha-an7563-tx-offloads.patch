@@ -1,0 +1,226 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: AN7563 TX checksum offload and scatter-gather
+
+The AN7563 transmit path linearized every frame and computed checksums in
+software. The stock driver sends every frame through its TSO-aware path:
+one descriptor for the linear part and one per fragment chained with the
+"not last" bit, and the ICO/UCO/TCO bits in the first message word. The
+bits sit where the other SoCs have them.
+
+Do the same: map fragments to their own descriptors and let the QDMA fill
+in the checksums for CHECKSUM_PARTIAL frames.
+
+The features are off by default and are enabled per device with
+"ethtool -K <dev> tx on sg on". With them off the stack still hands over
+linear frames with the checksum filled in, as before. DSA user ports take
+their features from vlan_features, which stays empty.
+
+Xiaomi BE5000, iperf3 from the router over eth1 (2.5G), TCP send, Mbit/s:
+
+  features           1 stream   4 streams
+  off                   543        580-611
+  tx                    559        659-666
+  tx + sg               692       1037-1183
+
+UDP send at 300 Mbit/s has no loss with the checksum offload on.
+
+Hardware TSO was tried and is not offered: it passes traffic but with
+2400-14600 retransmissions per 8 s run and no gain, for gso_max_size 8K,
+16K and 64K alike.
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -3397,23 +3397,42 @@
+ 					  struct airoha_qdma *qdma)
+ {
+ 	struct airoha_queue *q = &qdma->q_tx[0];
+-	struct airoha_queue_entry *e;
+-	struct airoha_qdma_desc *desc;
++	struct airoha_queue_entry *e, *tmp;
++	u32 nr_frags, tag, msg0 = 0, msg1;
+ 	struct netdev_queue *txq;
++	LIST_HEAD(tx_list);
+ 	dma_addr_t dma_addr;
+-	u32 tag, msg1, val;
+ 	u16 index, next;
+ 	unsigned int len;
++	int i = 0;
+ 
+ 	if (WARN_ON_ONCE(!q->ndesc))
+ 		goto drop;
+ 
+-	if (skb_linearize(skb))
++	/* The stack hands over fragments only with NETIF_F_SG. */
++	if (!(dev->features & NETIF_F_SG) && skb_linearize(skb))
+ 		goto drop;
+-	if (skb->ip_summed == CHECKSUM_PARTIAL && skb_checksum_help(skb))
+-		goto drop;
++
++	/* The stack leaves CHECKSUM_PARTIAL only with the checksum features
++	 * on. The QDMA then fills in the IP, TCP and UDP checksums; the
++	 * stock driver clears the field first.
++	 *
++	 * Hardware TSO (MSS in the TCP checksum field plus the TSO bit, as
++	 * on the other SoCs) passes traffic on the AN7563 but loses
++	 * segments: thousands of retransmissions in 8 s at any gso_max_size.
++	 * It is not offered.
++	 */
++	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++		if (skb_cow_head(skb, 0))
++			goto drop;
++
++		*(__sum16 *)(skb_checksum_start(skb) + skb->csum_offset) = 0;
++		msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_TCO_MASK, 1) |
++			FIELD_PREP(QDMA_ETH_TXMSG_UCO_MASK, 1) |
++			FIELD_PREP(QDMA_ETH_TXMSG_ICO_MASK, 1);
++	}
+ 	tag = airoha_get_dsa_tag(skb, dev);
+-	len = skb->len;
++	msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag);
+ 
+ 	msg1 = FIELD_PREP(QDMA_ETH_TXMSG_FPORT_MASK,
+ 			  ((struct airoha_gdm_dev *)netdev_priv(dev))->port->id) |
+@@ -3425,7 +3444,8 @@
+ 		goto drop_unlock;
+ 
+ 	txq = skb_get_tx_queue(dev, skb);
+-	if (q->queued + 1 >= q->ndesc) {
++	nr_frags = 1 + skb_shinfo(skb)->nr_frags;
++	if (q->queued + nr_frags >= q->ndesc) {
+ 		netif_tx_stop_queue(txq);
+ 		q->txq_stopped = true;
+ 		spin_unlock_bh(&q->lock);
+@@ -3433,6 +3453,7 @@
+ 		return NETDEV_TX_BUSY;
+ 	}
+ 
++	len = skb_headlen(skb);
+ 	dma_addr = dma_map_single(dev->dev.parent, skb->data, len,
+ 				  DMA_TO_DEVICE);
+ 	if (unlikely(dma_mapping_error(dev->dev.parent, dma_addr)))
+@@ -3441,37 +3462,74 @@
+ 	/* Free entries come back to q->tx_list in ring order:
+ 	 * airoha_qdma_tx_napi_poll() releases them as the TX done queue
+ 	 * reports them and also clears the TX done queue.
++	 *
++	 * One descriptor for the linear part and one per fragment, chained
++	 * with the MORE bit as the stock driver does; the skb hangs on the
++	 * last one. The check above leaves at least one free entry, so the
++	 * list is not empty while a fragment is still to come.
+ 	 */
+ 	e = list_first_entry(&q->tx_list, struct airoha_queue_entry, list);
+-	index = e - q->entry;
+-	list_del(&e->list);
+-	e->skb = skb;
+-	e->dma_addr = dma_addr;
+-	e->dma_len = len;
+ 	e->dma_type = AIROHA_DMA_MAP_SINGLE;
++	index = e - q->entry;
+ 
+-	next = list_empty(&q->tx_list) ? (index + 1) % q->ndesc :
+-	       list_first_entry(&q->tx_list, struct airoha_queue_entry,
+-				list) - q->entry;
++	while (true) {
++		struct airoha_qdma_desc *desc = &q->desc[index];
++		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
++		u32 val;
+ 
+-	desc = &q->desc[index];
+-	val = FIELD_PREP(QDMA_DESC_LEN_MASK, len);
+-	WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
+-	WRITE_ONCE(desc->addr, cpu_to_le32(dma_addr));
+-	WRITE_ONCE(desc->data, cpu_to_le32(FIELD_PREP(QDMA_DESC_NEXT_ID_MASK,
+-						      next)));
+-	WRITE_ONCE(desc->msg0,
+-		   cpu_to_le32(FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag)));
+-	WRITE_ONCE(desc->msg1, cpu_to_le32(msg1));
+-	WRITE_ONCE(desc->msg2, cpu_to_le32(0xffff));
+-	WRITE_ONCE(desc->msg3, 0);
++		list_move_tail(&e->list, &tx_list);
++		e->skb = i == nr_frags - 1 ? skb : NULL;
++		e->dma_addr = dma_addr;
++		e->dma_len = len;
++
++		if (list_empty(&q->tx_list)) {
++			e = NULL;
++			next = (index + 1) % q->ndesc;
++		} else {
++			e = list_first_entry(&q->tx_list,
++					     struct airoha_queue_entry, list);
++			next = e - q->entry;
++		}
++
++		val = FIELD_PREP(QDMA_DESC_LEN_MASK, len);
++		if (i < nr_frags - 1)
++			val |= FIELD_PREP(QDMA_DESC_MORE_MASK, 1);
++		WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
++		WRITE_ONCE(desc->addr, cpu_to_le32(dma_addr));
++		WRITE_ONCE(desc->data,
++			   cpu_to_le32(FIELD_PREP(QDMA_DESC_NEXT_ID_MASK,
++						  next)));
++		WRITE_ONCE(desc->msg0, cpu_to_le32(msg0));
++		WRITE_ONCE(desc->msg1, cpu_to_le32(msg1));
++		WRITE_ONCE(desc->msg2, cpu_to_le32(0xffff));
++		WRITE_ONCE(desc->msg3, 0);
++
++		index = next;
++		if (++i == nr_frags)
++			break;
++
++		if (WARN_ON_ONCE(!e))
++			goto drop_unmap;
++
++		len = skb_frag_size(frag);
++		dma_addr = skb_frag_dma_map(dev->dev.parent, frag, 0, len,
++					    DMA_TO_DEVICE);
++		if (unlikely(dma_mapping_error(dev->dev.parent, dma_addr)))
++			goto drop_unmap;
++
++		e->dma_type = AIROHA_DMA_MAP_PAGE;
++	}
+ 	dma_wmb();
+ 
+-	q->queued++;
++	/* entries in flight are on no list */
++	list_for_each_entry_safe(e, tmp, &tx_list, list)
++		list_del(&e->list);
++
++	q->queued += nr_frags;
+ 	q->head = next;
+ 
+ 	skb_tx_timestamp(skb);
+-	netdev_tx_sent_queue(txq, len);
++	netdev_tx_sent_queue(txq, skb->len);
+ 	if (q->ndesc - q->queued < q->free_thr) {
+ 		netif_tx_stop_queue(txq);
+ 		q->txq_stopped = true;
+@@ -3485,6 +3543,16 @@
+ 
+ 	return NETDEV_TX_OK;
+ 
++drop_unmap:
++	/* Nothing was handed to the hardware: the CPU index did not move.
++	 * Give the entries back in ring order.
++	 */
++	list_for_each_entry(e, &tx_list, list) {
++		airoha_unmap_xmit_buf(qdma->eth, e);
++		e->skb = NULL;
++		WRITE_ONCE(q->desc[e - q->entry].ctrl, 0);
++	}
++	list_splice(&tx_list, &q->tx_list);
+ drop_unlock:
+ 	spin_unlock_bh(&q->lock);
+ drop:
+@@ -4855,7 +4923,11 @@
+ 	netdev->features |= AIROHA_HW_FEATURES;
+ 	netdev->vlan_features = AIROHA_HW_FEATURES;
+ 	if (eth->soc->version == 0x7563) {
+-		netdev->hw_features = NETIF_F_HW_TC;
++		/* TX checksum and scatter-gather are off by default: turn
++		 * them on with ethtool -K.
++		 */
++		netdev->hw_features = NETIF_F_HW_TC | NETIF_F_SG |
++				      NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
+ 		netdev->features &= ~(AIROHA_HW_FEATURES | NETIF_F_LRO);
+ 		netdev->features |= NETIF_F_HW_TC;
+ 		netdev->vlan_features = 0;

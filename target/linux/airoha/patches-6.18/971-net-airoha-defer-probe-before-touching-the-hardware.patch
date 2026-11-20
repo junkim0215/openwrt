@@ -1,0 +1,54 @@
+From: Jun-Hyuk Kim <junhyukkim38@gmail.com>
+Subject: [PATCH] net: airoha: defer probe before touching the hardware
+
+airoha_probe() programs the frame engine and both QDMA blocks in
+airoha_hw_init(), including the AN7563 hardware forwarding queues and
+their DRAM pool, and only afterwards allocates the GDM ports. A port
+that reads its MAC address from an nvmem cell gets -EPROBE_DEFER while
+the flash provider has not probed yet. On the Xiaomi BE5000 this
+happens on every boot, so the driver probes twice and initialises the
+frame engine and QDMA twice.
+
+The failure path stops the QDMA TX/RX DMA but resets neither QDMA nor
+the frame engine, and the hardware forwarding descriptors and buffers,
+allocated with dmam_alloc_coherent(), are released while
+REG_FWD_DSCP_BASE and REG_FWD_BUF_BASE still point at them, until the
+next probe programs the queues again.
+
+Look up the MAC address of every available eth-mac node before the
+hardware is set up and return -EPROBE_DEFER from there, so that a
+deferred probe leaves the hardware untouched. With this the BE5000
+probes once and the PSE setup runs once per boot.
+
+Tested on the Xiaomi BE5000: probe runs once, MAC addresses unchanged.
+The wan_qos upload stall from #10 is not affected.
+
+Signed-off-by: Jun-Hyuk Kim <junhyukkim38@gmail.com>
+Link: https://github.com/pabragin/xiaomi-be5000-openwrt/issues/10
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -5157,6 +5157,23 @@
+ 		return err;
+ 	}
+ 
++	/* The GDM ports may read their MAC address from an nvmem cell whose
++	 * provider is not there yet. Defer before the hardware is set up, so
++	 * that a deferred probe leaves the frame engine and QDMA untouched.
++	 */
++	for_each_available_child_of_node(pdev->dev.of_node, np) {
++		u8 addr[ETH_ALEN];
++
++		if (!of_device_is_compatible(np, "airoha,eth-mac"))
++			continue;
++
++		if (of_get_mac_address(np, addr) == -EPROBE_DEFER) {
++			of_node_put(np);
++			return dev_err_probe(eth->dev, -EPROBE_DEFER,
++					     "MAC address not available yet\n");
++		}
++	}
++
+ 	eth->napi_dev = alloc_netdev_dummy(0);
+ 	if (!eth->napi_dev)
+ 		return -ENOMEM;

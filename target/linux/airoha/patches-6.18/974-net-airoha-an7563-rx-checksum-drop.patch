@@ -1,0 +1,58 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] net: airoha: AN7563: drop frames with a bad checksum in the GDM ports
+
+The RX path marks every frame CHECKSUM_UNNECESSARY, on all SoCs. On the
+other SoCs the GDM ports are set to drop frames with a bad IPv4, TCP or
+UDP checksum. The AN7563 init writes the forwarding register with the pad
+bit alone, which leaves that check off: nothing verifies the checksums of
+received frames, neither the hardware nor the stack.
+
+Set the drop bits as the stock firmware has them (GDM2_FWD_CFG reads
+0x17f14444 there, bits 20-23) and report NETIF_F_RXCSUM.
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -183,13 +183,24 @@
+ 	return 0;
+ }
+ 
++/* AN7563: the stock firmware runs the GDM ports with the drop bits for a bad
++ * IPv4, TCP or UDP checksum and a bad CRC set (GDM2_FWD_CFG reads 0x17f14444
++ * there). The RX path reports every frame as CHECKSUM_UNNECESSARY, which
++ * holds only with these bits on.
++ */
++#define AIROHA_AN7563_GDM_RX_DROP				\
++	(GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK |		\
++	 GDM_IP4_CKSUM_MASK | GDM_DROP_CRC_ERR_MASK)
++
+ static void airoha_fe_maccr_init(struct airoha_eth *eth)
+ {
+ 	int p;
+ 
+ 	if (eth->soc->version == 0x7563) {
+ 		for (p = 1; p <= ARRAY_SIZE(eth->ports); p++) {
+-			airoha_fe_wr(eth, REG_GDM_FWD_CFG(p), GDM_PAD_EN_MASK);
++			airoha_fe_wr(eth, REG_GDM_FWD_CFG(p),
++				     GDM_PAD_EN_MASK |
++				     AIROHA_AN7563_GDM_RX_DROP);
+ 			airoha_fe_rmw(eth, REG_GDM_LEN_CFG(p),
+ 				      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
+ 				      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
+@@ -2203,7 +2214,7 @@
+ 
+ 	if (eth->soc->version == 0x7563)
+ 		airoha_fe_wr(eth, REG_GDM_FWD_CFG(AIROHA_GDM1_IDX),
+-			     GDM_PAD_EN_MASK);
++			     GDM_PAD_EN_MASK | AIROHA_AN7563_GDM_RX_DROP);
+ 
+ 	err = airoha_ppe_init(eth);
+ 
+@@ -5012,7 +5023,7 @@
+ 		netdev->hw_features = NETIF_F_HW_TC | NETIF_F_SG |
+ 				      NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM;
+ 		netdev->features &= ~(AIROHA_HW_FEATURES | NETIF_F_LRO);
+-		netdev->features |= NETIF_F_HW_TC;
++		netdev->features |= NETIF_F_HW_TC | NETIF_F_RXCSUM;
+ 		netdev->vlan_features = 0;
+ 	}
+ 	SET_NETDEV_DEV(netdev, eth->dev);

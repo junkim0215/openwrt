@@ -1,0 +1,73 @@
+From: Pavel Bragin <pabragin@yandex.ru>
+Subject: [PATCH] watchdog: airoha: guard boot and reboot
+
+Start the watchdog at probe and let the watchdog core ping it until
+userspace opens it, so that a hang during boot ends in a reset.
+
+Once a reboot starts, ignore pings: userspace keeps pinging while the
+kernel goes down, so a reboot that stalls before the reset would
+otherwise hang the router until it is power cycled.
+
+Signed-off-by: Pavel Bragin <pabragin@yandex.ru>
+---
+--- a/drivers/watchdog/airoha_wdt.c
++++ b/drivers/watchdog/airoha_wdt.c
+@@ -20,6 +20,7 @@
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/watchdog.h>
++#include <linux/reboot.h>
+ 
+ /* Base address of timer and watchdog registers */
+ #define TIMER_CTRL			0x0
+@@ -77,8 +78,12 @@
+ 	return 0;
+ }
+ 
++static bool airoha_wdt_rebooting;
++
+ static int airoha_wdt_ping(struct watchdog_device *wdog_dev)
+ {
++	if (READ_ONCE(airoha_wdt_rebooting))
++		return 0;
+ 	struct airoha_wdt_desc *airoha_wdt = watchdog_get_drvdata(wdog_dev);
+ 	u32 val;
+ 
+@@ -124,6 +129,23 @@
+ 	.get_timeleft = airoha_wdt_get_timeleft,
+ };
+ 
++/*
++ * Once a reboot starts, stop taking pings: userspace keeps pinging while
++ * the kernel goes down, so a reboot that stalls would otherwise never end
++ * in a reset.
++ */
++static int airoha_wdt_reboot_notify(struct notifier_block *nb,
++				    unsigned long action, void *data)
++{
++	WRITE_ONCE(airoha_wdt_rebooting, true);
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block airoha_wdt_reboot_nb = {
++	.notifier_call = airoha_wdt_reboot_notify,
++	.priority = INT_MAX,
++};
++
+ static int airoha_wdt_probe(struct platform_device *pdev)
+ {
+ 	struct airoha_wdt_desc *airoha_wdt;
+@@ -164,6 +186,13 @@
+ 	watchdog_set_nowayout(wdog_dev, nowayout);
+ 	watchdog_stop_on_unregister(wdog_dev);
+ 
++	/* Run from probe: the watchdog core pings it until userspace opens
++	 * it, so a hang during boot also ends in a reset.
++	 */
++	airoha_wdt_start(wdog_dev);
++	set_bit(WDOG_HW_RUNNING, &wdog_dev->status);
++	register_reboot_notifier(&airoha_wdt_reboot_nb);
++
+ 	ret = devm_watchdog_register_device(dev, wdog_dev);
+ 	if (ret)
+ 		return ret;

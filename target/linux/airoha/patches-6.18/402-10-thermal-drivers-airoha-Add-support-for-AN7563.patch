@@ -16,9 +16,11 @@ min and max, and convert with the per-sensor slope.
 
 Signed-off-by: Pavel Bragin <pabragin@yandex.ru>
 ---
---- a/drivers/thermal/airoha_thermal.c	2026-10-17 17:12:52.342065472 +0000
-+++ b/drivers/thermal/airoha_thermal.c	2026-10-17 17:12:52.354979222 +0000
-@@ -195,6 +195,22 @@
+Index: linux-6.18.64/drivers/thermal/airoha_thermal.c
+===================================================================
+--- linux-6.18.64.orig/drivers/thermal/airoha_thermal.c
++++ linux-6.18.64/drivers/thermal/airoha_thermal.c
+@@ -197,6 +197,22 @@
  
  #define AIROHA_THERMAL_NO_MUX_SENSOR		-1
  
@@ -41,17 +43,17 @@ Signed-off-by: Pavel Bragin <pabragin@yandex.ru>
  /* Convert temp to raw value as read from ADC	((((temp / 100) - init) * slope) / 1000) + offset */
  #define TEMP_TO_RAW(priv, temp)			((((((temp) / 100) - (priv)->init_temp) * \
  						  (priv)->default_slope) / 1000) + \
-@@ -266,6 +282,9 @@ struct airoha_thermal_priv {
- 	int init_temp;
- 	int default_slope;
+@@ -277,6 +293,9 @@ struct airoha_thermal_priv {
  	int default_offset;
+ 	int cpu_offset;
+ 	bool cpu_adc_failed;
 +
 +	/* AN7563: ADC code at init_temp per sensor */
 +	int sensor_offset[AN7563_NUM_SENSOR];
  };
  
  struct airoha_thermal_soc_data {
-@@ -814,7 +833,141 @@ static const struct airoha_thermal_soc_d
+@@ -956,7 +975,141 @@ static const struct airoha_thermal_soc_d
  	.probe = &an7583_thermal_probe,
  };
  

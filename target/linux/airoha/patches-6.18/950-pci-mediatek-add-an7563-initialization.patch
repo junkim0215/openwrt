@@ -8,9 +8,11 @@ configuration reads on the tested board. Keep PME enabled.
 
 Signed-off-by: Iscle <albertiscle9@gmail.com>
 ---
---- a/drivers/pci/controller/pcie-mediatek.c
-+++ b/drivers/pci/controller/pcie-mediatek.c
-@@ -105,6 +105,7 @@
+Index: linux-6.18.64/drivers/pci/controller/pcie-mediatek.c
+===================================================================
+--- linux-6.18.64.orig/drivers/pci/controller/pcie-mediatek.c
++++ linux-6.18.64/drivers/pci/controller/pcie-mediatek.c
+@@ -112,6 +112,7 @@
  /* PCIe V2 configuration transaction header */
  #define PCIE_CFG_HEADER0	0x460
  #define PCIE_CFG_HEADER1	0x464
@@ -18,15 +20,15 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  #define PCIE_CFG_HEADER2	0x468
  #define PCIE_CFG_WDATA		0x470
  #define PCIE_APP_TLP_REQ	0x488
-@@ -154,6 +155,7 @@
-  * @setup_irq: pointer to initialize IRQ functions
+@@ -173,6 +174,7 @@ enum mtk_pcie_quirks {
+  * @quirks: PCIe device quirks.
   */
  struct mtk_pcie_soc {
 +	bool an7563;
- 	bool need_fix_class_id;
- 	bool need_fix_device_id;
- 	bool no_msi;
-@@ -290,7 +292,12 @@
+ 	unsigned int device_id;
+ 	struct pci_ops *ops;
+ 	int (*startup)(struct mtk_pcie_port *port);
+@@ -309,7 +311,12 @@ static int mtk_pcie_hw_rd_cfg(struct mtk
  	/* Write PCIe configuration transaction header for Cfgrd */
  	writel(CFG_HEADER_DW0(CFG_WRRD_TYPE_0, CFG_RD_FMT),
  	       port->base + PCIE_CFG_HEADER0);
@@ -40,7 +42,7 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	writel(CFG_HEADER_DW2(where, PCI_FUNC(devfn), PCI_SLOT(devfn), bus),
  	       port->base + PCIE_CFG_HEADER2);
  
-@@ -320,7 +327,12 @@
+@@ -339,7 +346,12 @@ static int mtk_pcie_hw_wr_cfg(struct mtk
  	/* Write PCIe configuration transaction header for Cfgwr */
  	writel(CFG_HEADER_DW0(CFG_WRRD_TYPE_0, CFG_WR_FMT),
  	       port->base + PCIE_CFG_HEADER0);
@@ -54,11 +56,10 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  	writel(CFG_HEADER_DW2(where, PCI_FUNC(devfn), PCI_SLOT(devfn), bus),
  	       port->base + PCIE_CFG_HEADER2);
  
-@@ -343,6 +355,14 @@
- 	struct mtk_pcie *pcie = bus->sysdata;
+@@ -363,6 +375,14 @@ static struct mtk_pcie_port *mtk_pcie_fi
  	struct mtk_pcie_port *port;
  	struct pci_dev *dev = NULL;
-+
+ 
 +	/* Each AN7563 controller is a separate PCI domain, at device 0. */
 +	if (pcie->soc->an7563) {
 +		if (PCI_SLOT(devfn))
@@ -66,10 +67,11 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
 +		return list_first_entry_or_null(&pcie->ports,
 +					       struct mtk_pcie_port, list);
 +	}
- 
++
  	/*
  	 * Walk the bus hierarchy to get the devfn value
-@@ -660,6 +680,61 @@
+ 	 * of the port in the root bus.
+@@ -679,6 +699,61 @@ static int mtk_pcie_setup_irq(struct mtk
  	return 0;
  }
  
@@ -131,11 +133,10 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  static int mtk_pcie_startup_port_v2(struct mtk_pcie_port *port)
  {
  	struct mtk_pcie *pcie = port->pcie;
-@@ -675,6 +750,15 @@
- 		mem = entry->res;
+@@ -711,6 +786,15 @@ static int mtk_pcie_startup_port_v2(stru
  	if (!mem)
  		return -EINVAL;
-+
+ 
 +	if (soc->an7563) {
 +		err = an7563_pcie_init(port);
 +		if (err)
@@ -144,18 +145,19 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
 +		writel(0x06040001, port->base + 0x104);
 +		goto wait_link;
 +	}
- 
++
  	/* MT7622 platforms need to enable LTSSM and ASPM from PCIe subsys */
  	if (pcie->base) {
-@@ -723,6 +807,7 @@
- 	if (soc->need_fix_device_id)
+ 		val = readl(pcie->base + PCIE_SYS_CFG_V2);
+@@ -755,6 +839,7 @@ static int mtk_pcie_startup_port_v2(stru
+ 	if (soc->quirks & MTK_PCIE_FIX_DEVICE_ID)
  		writew(soc->device_id, port->base + PCIE_CONF_DEVICE_ID);
  
 +wait_link:
  	/* 100ms timeout value should be enough for Gen1/2 training */
  	err = readl_poll_timeout(port->base + PCIE_LINK_STATUS_V2, val,
  				 !!(val & PCIE_PORT_LINKUP_V2), 20,
-@@ -740,15 +825,27 @@
+@@ -772,15 +857,27 @@ static int mtk_pcie_startup_port_v2(stru
  
  	/* Set AHB to PCIe translation windows */
  	val = lower_32_bits(mem->start) |
@@ -185,8 +187,8 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
  
  	return 0;
  }
-@@ -1244,7 +1341,15 @@
- 	.setup_irq = mtk_pcie_setup_irq,
+@@ -1316,7 +1413,15 @@ static const struct mtk_pcie_soc mtk_pci
+ 	.quirks = MTK_PCIE_FIX_CLASS_ID | MTK_PCIE_FIX_DEVICE_ID,
  };
  
 +static const struct mtk_pcie_soc mtk_pcie_soc_an7563 = {
@@ -198,6 +200,6 @@ Signed-off-by: Iscle <albertiscle9@gmail.com>
 +
  static const struct of_device_id mtk_pcie_ids[] = {
 +	{ .compatible = "airoha,an7563-pcie", .data = &mtk_pcie_soc_an7563 },
+ 	{ .compatible = "airoha,an7583-pcie", .data = &mtk_pcie_soc_an7583 },
  	{ .compatible = "mediatek,mt2701-pcie", .data = &mtk_pcie_soc_v1 },
  	{ .compatible = "mediatek,mt7623-pcie", .data = &mtk_pcie_soc_v1 },
- 	{ .compatible = "mediatek,mt2712-pcie", .data = &mtk_pcie_soc_mt2712 },

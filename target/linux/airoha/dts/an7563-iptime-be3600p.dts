@@ -12,7 +12,7 @@
 /*
  * ipTIME BE3600plus: 256 MiB RAM, MT7990 (14c3:7993 + 14c3:799b) with its
  * EEPROM at Factory 0x0, WAN on switch port 4, no EN8811H. The port MACs
- * are set from Factory 0x4 by 02_network (LAN -2, WAN -1).
+ * are below the Wi-Fi MAC at Factory 0x4, as on stock: LAN -2, WAN -1.
  * OpenWrt lives in tclinux_slave; everything else stays read-only.
  */
 
@@ -151,6 +151,8 @@
 };
 
 &gdm1 {
+	nvmem-cells = <&macaddr_factory_4 (-2)>;
+	nvmem-cell-names = "mac-address";
 	status = "okay";
 };
 
@@ -190,6 +192,12 @@
 
 				wifi_eeprom: eeprom@0 {
 					reg = <0x0 0x1e00>;
+				};
+
+				macaddr_factory_4: macaddr@4 {
+					compatible = "mac-base";
+					reg = <0x4 0x6>;
+					#nvmem-cell-cells = <1>;
 				};
 			};
 		};
@@ -243,6 +251,8 @@
 
 &gsw_port4 {
 	label = "wan";
+	nvmem-cells = <&macaddr_factory_4 (-1)>;
+	nvmem-cell-names = "mac-address";
 	status = "okay";
 };
 

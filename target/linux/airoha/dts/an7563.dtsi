@@ -328,6 +328,7 @@
 
 			#clock-cells = <1>;
 			#reset-cells = <1>;
+			#phy-cells = <1>;
 		};
 
 		system-controller@1fbf0200 {

@@ -78,6 +78,23 @@ per-station, per-TID counters; a snapshot command revokes the old entry while
 exporting its counters for radio recovery. Counter errors must not fall back
 to stale host state.
 
+The MT7992 RRO marks receive frames (repeat, behind its window, flushed) but
+delivers them in air order. A client sending one TID to several destination
+addresses transmits interleaved sequence ranges, and MediaTek clients also
+interleave the A-MSDU subframes of several MPDUs. Core 0 therefore reorders
+before the replay checks (`reorder.c.inc`) for a station and TID whose frames
+the replay check rejected 8 times within 50 ms, until a second passes with
+every frame in sequence; other traffic takes the direct path. Frames in
+sequence go straight on; otherwise the completion descriptor waits in a
+1536-entry pool (0x84298000..0x8429ffff, a 512-sequence window for each of
+8 sessions) until
+its MPDU is complete (single MSDU, or first and last subframe) and next in
+sequence, the window moves or 20 ms pass. Subframes leave sorted first,
+middle..., last. The A-MSDU replay marker stays after the last subframe, so a
+middle subframe delivered after the last one still matches its MPDU; a
+second last subframe or a replayed MPDU does not. An RRO stop drops the pool
+with the record queue. Counters are at NPU control words 0x7a0..0x7df.
+
 Transmit key counters belong to the radio hardware. The MT7992 driver,
 not this firmware, saves and restores those counters across radio recovery.
 

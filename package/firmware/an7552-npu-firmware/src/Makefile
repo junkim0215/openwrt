@@ -26,7 +26,7 @@ all: build/an7552.bin
 build:
 	mkdir -p $@
 
-build/%.o: %.c protocol.h firmware-abi.h native-tx.c.inc station.c.inc tdma.c.inc tx-pool.c.inc txfree.c.inc rro.c.inc ppe.c.inc upsplit.c.inc pn.c.inc pn-cache.h rx-security.c.inc rx-parse.h pkt-view.h prof.h | build
+build/%.o: %.c protocol.h firmware-abi.h native-tx.c.inc station.c.inc tdma.c.inc tx-pool.c.inc txfree.c.inc rro.c.inc ppe.c.inc upsplit.c.inc pn.c.inc pn-cache.h rx-security.c.inc rx-parse.h pkt-view.h prof.h reorder.c.inc | build
 	$(CC) $(CFLAGS) -c $< -o $@
 
 build/start.o: start.S firmware-abi.h | build

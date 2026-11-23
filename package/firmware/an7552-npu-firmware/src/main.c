@@ -85,7 +85,7 @@ __attribute__((noinline, noreturn)) static void core0_loop(volatile uint32_t *st
 		(void *)(uintptr_t)(AN7552_NPU_BASE + AN7552_STRIDE);
 	uint32_t heartbeat = 0;
 	struct tx_band download[2] = { { 0 } };
-	struct up_front upload = { 0 };
+	struct up_front upload = { .reorder_stale = 1 };
 
 	PROF_DECLARE(prof, 0);
 	for (;;) {

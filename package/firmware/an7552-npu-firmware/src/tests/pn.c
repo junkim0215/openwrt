@@ -135,6 +135,16 @@ int main(void)
 	packet[16] = 1;
 	assert(native_rx_security(packet, 128, &cookie) == 0x31);
 	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	/* A middle subframe after the last one still belongs to the MPDU. */
+	packet[16] = 2;
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	packet[16] = 1;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	/* A replayed MPDU closes the door for its subframes. */
+	packet[16] = 3;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	packet[16] = 2;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
 	packet[16] = 0;
 	put32(packet + 48, 3);
 	packet[6] |= 0x20;

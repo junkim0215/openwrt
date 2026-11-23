@@ -73,13 +73,22 @@ __attribute__((noinline)) static uint32_t native_rx_security_view(struct pkt_vie
 		}
 	}
 	if (aggregate && aggregate != 3) {
-		result = (EG(40 + tid) == (0x10000 | (seq >> 4)) &&
+		uint32_t marker = EG(40 + tid);
+
+		/* The marker stays after the last subframe, marked closed: the
+		 * radio can deliver a middle subframe after the last one. Same
+		 * sequence number and PN as the MPDU accepted last, so it
+		 * belongs to it. A closed MPDU takes no second last subframe;
+		 * the next MPDU or single MSDU replaces the marker.
+		 */
+		result = ((marker & ~0x20000U) == (0x10000 | (seq >> 4)) &&
+			  !(aggregate == 1 && (marker & 0x20000)) &&
 			  EG(4 + tid * 2) == low &&
 			  EG(5 + tid * 2) == high) ?
 				 1 :
 				 0;
-		if (aggregate == 1)
-			ES(40 + tid, 0);
+		if (aggregate == 1 && result)
+			ES(40 + tid, marker | 0x20000);
 	} else {
 		if (pc) {
 			/* pn_compare() on the cached entry; key word checked above. */
@@ -101,6 +110,9 @@ __attribute__((noinline)) static uint32_t native_rx_security_view(struct pkt_vie
 		}
 		if (aggregate == 3 && result == 1)
 			ES(40 + tid, 0x10000 | (seq >> 4));
+		else if (aggregate == 3)
+			/* A replayed MPDU: none of its subframes may follow. */
+			ES(40 + tid, 0);
 	}
 	*cookie = EG(1);
 	return (wcid << 4) | (result == 1 ? 1 : 2);

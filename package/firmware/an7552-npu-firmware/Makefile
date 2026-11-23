@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=an7552-npu-firmware
 PKG_VERSION:=1
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=COPYING
 PKG_BUILD_DEPENDS:=riscv32-elf-gcc/host
@@ -20,7 +20,7 @@ endef
 
 define Package/an7552-npu-firmware/description
  Firmware for the two RISC-V network processor cores in the AN7552/AN7563.
- Implements MT7992 transmit, receive reordering, replay protection and
+ Implements MT7992 transmit, block-ack receive reordering, replay protection and
  hardware PPE forwarding. Built from source with a bare-metal RISC-V compiler.
 endef
 

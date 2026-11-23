@@ -97,6 +97,7 @@ int main(void)
 	(void)native_ppe_submit;
 	map(AN7552_NPU_BASE, 4096);
 	map(0x3e900000, 0x3000);
+	map(0x44298000, 0x8000);	/* receive reorder pool */
 	map(0x442f0000, 0x10000);
 	map(0x1fb50000, 4096);
 	ppe()[0] = 2;

@@ -63,6 +63,7 @@ int main(void)
 	map(0x3e900000, 0x3000);	/* local SRAM: PPE index cache, records */
 	map(0x44010000, 0xf0000);
 	map(0x441b0000, 0x30000);
+	map(0x44298000, 0x8000);	/* receive reorder pool */
 	map(0x442c0000, 0x40000);
 	map(0x44e00000, 0xc00000);
 	map(0x49000000, 0x30000);

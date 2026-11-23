@@ -116,6 +116,7 @@ static const struct {
 	{ 0x3e900000, 0x3000 },		/* local SRAM: PPE cache, records */
 	{ 0x44110000, 0xa0000 },
 	{ 0x441b0000, 0x30000 },
+	{ 0x44298000, 0x8000 },		/* receive reorder pool */
 	{ 0x442a0000, 0x10000 },
 	{ 0x442c0000, 0x40000 },
 	{ 0x44e00000, 0x40000 },

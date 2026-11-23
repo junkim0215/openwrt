@@ -89,6 +89,8 @@
  */
 #define UP_ENTRIES 64U
 #define UP_WORDS 8U
+#include "reorder.c.inc"
+
 #define UP_RING 0x3e902800U
 #define UP_CTRL (AN7552_NPU_BASE + 0x480U)
 #define UP_MAGIC 0x75520a51U
@@ -187,6 +189,7 @@ __attribute__((unused)) static void up_init(uint32_t core)
 struct up_front {
 	uint32_t head;		/* own copy of US_HEAD */
 	uint32_t halted;	/* an error record is out; wait for a stop */
+	uint32_t reorder_stale;	/* reorder pool must be dropped before use */
 };
 
 struct up_front_batch {
@@ -200,54 +203,82 @@ __attribute__((unused)) static void up_pn_service(void)
 	pn_service_run(&up_ctrl()[US_EPOCH]);
 }
 
-static int up_front_one(struct up_front_batch *b, volatile uint32_t *rec)
+/* Take the next completion descriptor off the ring. */
+static int up_front_fetch(struct up_front_batch *b, struct ro_desc *d)
+{
+	volatile uint32_t *descriptor;
+	uint32_t length, token;
+
+	descriptor = rx_words(AN7552_RX_COMPLETE_HOST + b->index * 16);
+	d->d3 = descriptor[3];
+	if ((d->d3 >> 28) != b->phase)
+		return UP_EMPTY;
+	barrier();
+	d->d0 = descriptor[0];
+	d->d1 = descriptor[1];
+	d->d2 = descriptor[2];
+	length = (d->d1 >> 16) & 16383;
+	token = (d->d2 >> 16) - AN7552_RX_TOKEN_BASE;
+	/* The buffer state check is core 1's (it owns the states). */
+	if (token >= AN7552_RX_BUFFER_COUNT || length > 2048 ||
+	    d->d0 != AN7552_RX_BUFFER_HOST + token * 2048)
+		return UP_ERROR_RECORD;
+	/* A buffer after a non-final one continues the previous MPDU. */
+	d->cont = b->chain;
+	d->split = b->chain || !(d->d1 & (1U << 30));
+	d->accept = 0;
+	/* Data1 bit 30 marks the last buffer of an MPDU. */
+	b->chain = !(d->d1 & (1U << 30));
+	b->index++;
+	if (b->index == AN7552_RX_RING_COUNT) {
+		b->index = 0;
+		b->phase = (b->phase + 1) & 15;
+	}
+	b->done++;
+	return UP_DONE;
+}
+
+/* Header words are read through the cached alias without invalidating the
+ * cache first. The free list is a FIFO of AN7552_RX_BUFFER_COUNT (6144)
+ * tokens, so a released buffer is reused only after every other buffer has
+ * been; by then its old lines have long been evicted.
+ */
+static void up_front_view(struct pkt_view *view, const struct ro_desc *d)
+{
+	pv_init(view, RX_HEADER_ALIAS(d->d0), (d->d1 >> 16) & 16383);
+}
+
+/* Validate and classify one frame, in delivery order, into a record. */
+static void up_front_one(struct up_front_batch *b, volatile uint32_t *rec,
+			 const struct ro_desc *d, struct pkt_view *view)
 {
 	volatile uint32_t *q =
 		(void *)(uintptr_t)(AN7552_NPU_BASE + AN7552_RRO_CONTROL);
-	volatile uint32_t *descriptor;
 	struct rx_metadata parsed;
-	struct pkt_view view;
-	uint32_t d0, d1, d2, d3, length, token, reason, security, parsed_result,
-		cookie = 0, class = 0, mac_low = 0, mac_high = 0;
+	uint32_t d1 = d->d1, d2 = d->d2, length = (d1 >> 16) & 16383, reason,
+		 security, parsed_result, cookie = 0, class = 0, mac_low = 0,
+		 mac_high = 0;
 
 	parsed.wcid = parsed.band = parsed.bss = 0;
 	parsed.offset = parsed.length = 0;
-	descriptor = rx_words(AN7552_RX_COMPLETE_HOST + b->index * 16);
-	d3 = descriptor[3];
-	if ((d3 >> 28) != b->phase)
-		return UP_EMPTY;
-	barrier();
-	d0 = descriptor[0];
-	d1 = descriptor[1];
-	d2 = descriptor[2];
-	length = (d1 >> 16) & 16383;
-	token = (d2 >> 16) - AN7552_RX_TOKEN_BASE;
-	reason = (d2 >> 12) & 15;
-	/* The buffer state check is core 1's (it owns the states). */
-	if (token >= AN7552_RX_BUFFER_COUNT || length > 2048 ||
-	    d0 != AN7552_RX_BUFFER_HOST + token * 2048) {
-		SPLIT_ST(&rec[UR_D1], d1);
-		SPLIT_ST(&rec[UR_D2], d2);
-		SPLIT_ST(&rec[UR_CLASS], UR_ERROR);
-		return UP_ERROR_RECORD;
-	}
-	/* Header words are read through the cached alias without invalidating
-	 * the cache first. The free list is a FIFO of AN7552_RX_BUFFER_COUNT
-	 * (6144) tokens, so a released buffer is reused only after every other
-	 * buffer has been; by then its old lines have long been evicted.
-	 */
-	pv_init(&view, RX_HEADER_ALIAS(d0), length);
-	/* A buffer after a non-final one continues the previous MPDU. */
-	if (b->chain)
-		reason = 1;
-	security = (reason == 1 || reason == 2) ?
+	reason = d->cont ? 1 : (d2 >> 12) & 15;
+	security = (reason == 1 || reason == 2) && !d->accept ?
 			   0 :
-			   native_rx_security_view(&view, length, &cookie,
+			   native_rx_security_view(view, length, &cookie,
 						   &b->pn);
+	/* A marked frame the reorder accepted keeps its mark (and the host
+	 * drops it) unless the replay check accepted it here.
+	 */
+	if (d->accept && (security & 15) == 1) {
+		d2 &= ~(15U << 12);
+		reason = 0;
+	}
 	b->secure += ((security & 15) == 1);
-	if ((security & 15) == 2)
+	if ((security & 15) == 2) {
 		q[24]++;
-	parsed_result = rx_parse_view(&view, length, reason, &parsed);
+		ro_rejected(view, d);
+	}
+	parsed_result = rx_parse_view(view, length, reason, &parsed);
 	if ((security & 15) == 1 && parsed_result != RX_PARSE_OK)
 		(*(volatile uint32_t *)(uintptr_t)(AN7552_NPU_BASE + 0x780 +
 						   parsed_result * 4))++;
@@ -261,28 +292,19 @@ static int up_front_one(struct up_front_batch *b, volatile uint32_t *rec)
 
 		class = parsed.length | (parsed.offset << 16) |
 			(parsed.band << 24);
-		mac_low = pv_get32(&view, source);
-		mac_high = pv_byte(&view, source + 4) |
-			   (pv_byte(&view, source + 5) << 8) |
+		mac_low = pv_get32(view, source);
+		mac_high = pv_byte(view, source + 4) |
+			   (pv_byte(view, source + 5) << 8) |
 			   (b->epoch << 16);
 	}
 	SPLIT_ST(&rec[UR_D1], d1);
 	SPLIT_ST(&rec[UR_D2], d2);
-	SPLIT_ST(&rec[UR_D3], d3);
+	SPLIT_ST(&rec[UR_D3], d->d3);
 	SPLIT_ST(&rec[UR_SECURITY], security);
 	SPLIT_ST(&rec[UR_COOKIE], cookie);
 	SPLIT_ST(&rec[UR_MAC_LOW], mac_low);
 	SPLIT_ST(&rec[UR_MAC_HIGH], mac_high);
 	SPLIT_ST(&rec[UR_CLASS], class);
-	/* Data1 bit 30 marks the last buffer of an MPDU. */
-	b->chain = !(d1 & (1U << 30));
-	b->index++;
-	if (b->index == AN7552_RX_RING_COUNT) {
-		b->index = 0;
-		b->phase = (b->phase + 1) & 15;
-	}
-	b->done++;
-	return UP_DONE;
 }
 
 /* Core 0, once per loop iteration, at most UP_FRONT_BUDGET frames. Never
@@ -303,6 +325,8 @@ __attribute__((unused, noinline)) static void native_up_front(struct up_front *f
 			barrier();
 			SPLIT_ST(&s[US_ACTIVE], 0);
 		}
+		/* An RRO stop drops held frames with the queued records. */
+		f->reorder_stale = 1;
 		return;
 	}
 	if (!SPLIT_LD(&s[US_ACTIVE])) {
@@ -315,6 +339,10 @@ __attribute__((unused, noinline)) static void native_up_front(struct up_front *f
 		}
 		f->head = SPLIT_LD(&s[US_HEAD]);
 		f->halted = 0;
+	}
+	if (f->reorder_stale) {
+		ro_reset();
+		f->reorder_stale = 0;
 	}
 	if (f->halted || q[6] || !q[4])
 		return;
@@ -336,15 +364,43 @@ __attribute__((unused, noinline)) static void native_up_front(struct up_front *f
 	b.epoch = s[US_EPOCH];
 	b.secure = 0;
 	b.done = 0;
-	for (uint32_t n = 0; n < room; n++) {
-		result = up_front_one(&b, up_slot(head));
-		if (result == UP_EMPTY)
-			break;
-		head++;
-		if (result == UP_ERROR_RECORD) {
-			f->halted = 1;
-			break;
+	ro_tick();
+	/* Held frames take no record: bound the descriptors per call too. */
+	for (uint32_t n = 0, guard = 0; n < room && guard < 4 * UP_FRONT_BUDGET;
+	     guard++) {
+		struct ro_desc d;
+		struct pkt_view view;
+		struct ro_state *r = ro();
+
+		/* Never put a held frame between the buffers of one MPDU. */
+		if (!b.chain && ro_release(&d)) {
+			up_front_view(&view, &d);
+		} else {
+			if (!b.chain && r->deferred) {
+				d = r->pending;
+				r->deferred = 0;
+			} else {
+				result = up_front_fetch(&b, &d);
+				if (result == UP_EMPTY)
+					break;
+				if (result == UP_ERROR_RECORD) {
+					volatile uint32_t *rec = up_slot(head);
+
+					SPLIT_ST(&rec[UR_D1], d.d1);
+					SPLIT_ST(&rec[UR_D2], d.d2);
+					SPLIT_ST(&rec[UR_CLASS], UR_ERROR);
+					head++;
+					f->halted = 1;
+					break;
+				}
+			}
+			up_front_view(&view, &d);
+			if (ro_admit(&view, &d) != RO_EMIT)
+				continue;
 		}
+		up_front_one(&b, up_slot(head), &d, &view);
+		head++;
+		n++;
 		if (head - published >= UP_PUBLISH) {
 			/* The records are visible before the head covering them. */
 			barrier();

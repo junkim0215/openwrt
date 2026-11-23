@@ -35,11 +35,16 @@ direct path.
  			HW_FWD_DESC_NUM_MASK,
 --- a/drivers/net/ethernet/airoha/airoha_ppe.c
 +++ b/drivers/net/ethernet/airoha/airoha_ppe.c
-@@ -17,6 +17,12 @@
+@@ -17,6 +17,17 @@
  #include "airoha_regs.h"
  #include "airoha_eth.h"
  
-+/* AN7563: send PPE flows bound to GDM2 through the QDMA QoS path */
++/* AN7563: send PPE flows bound to GDM2 through the QDMA QoS path.
++ * The uplink stall seen on this path with some kernel builds
++ * (https://github.com/pabragin/xiaomi-be5000-openwrt/issues/10) was a
++ * QDMA reset line left asserted by the clock driver (609-02), fixed by
++ * paulojjj. wan_qos=0 restores the direct path.
++ */
 +static bool airoha_an7563_wan_qos = true;
 +module_param_named(wan_qos, airoha_an7563_wan_qos, bool, 0644);
 +MODULE_PARM_DESC(wan_qos,
@@ -48,7 +53,7 @@ direct path.
  /* Serialize airoha_gdm_dev flags, QDMA pointer and PPE CPU port
   * configuration.
   */
-@@ -420,9 +426,14 @@
+@@ -420,9 +431,14 @@
  			val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port) |
  			       FIELD_PREP(AIROHA_FOE_IB2_DSCP, dsfield) |
  			       AIROHA_FOE_IB2_PSE_QOS;

@@ -238,11 +238,17 @@ static int up_front_fetch(struct up_front_batch *b, struct ro_desc *d)
 	return UP_DONE;
 }
 
-/* Header words are read through the cached alias without invalidating the
- * cache first. The free list is a FIFO of AN7552_RX_BUFFER_COUNT (6144)
- * tokens, so a released buffer is reused only after every other buffer has
- * been; by then its old lines have long been evicted.
+/* Header words are read through the cached alias. Buffers are 2 KB apart,
+ * so line n of every buffer maps to set n or n + 32 of the 64. Every frame
+ * loads lines 0 and 1, so between two uses of a buffer (6144 frames, FIFO)
+ * those sets take ~3000 fills and an old line cannot survive; they are not
+ * dropped, since core 0 is the upload bottleneck and a discard per frame
+ * costs ~5% of its cycles. Deeper lines (extra receive descriptor groups,
+ * VLAN, long IPv6 headers) are loaded by few frames, so up_front_one()
+ * drops them. Frame bodies are read only by core 1 and dropped there
+ * before the copy.
  */
+#define UP_HEADER_KEEP_WORDS 32U	/* lines 0 and 1 */
 static void up_front_view(struct pkt_view *view, const struct ro_desc *d)
 {
 	pv_init(view, RX_HEADER_ALIAS(d->d0), (d->d1 >> 16) & 16383);
@@ -305,6 +311,9 @@ static void up_front_one(struct up_front_batch *b, volatile uint32_t *rec,
 	SPLIT_ST(&rec[UR_MAC_LOW], mac_low);
 	SPLIT_ST(&rec[UR_MAC_HIGH], mac_high);
 	SPLIT_ST(&rec[UR_CLASS], class);
+	if (view->top > UP_HEADER_KEEP_WORDS)
+		l1_discard_range(view->base + UP_HEADER_KEEP_WORDS * 4,
+				 (view->top - UP_HEADER_KEEP_WORDS) * 4);
 }
 
 /* Core 0, once per loop iteration, at most UP_FRONT_BUDGET frames. Never
@@ -341,6 +350,8 @@ __attribute__((unused, noinline)) static void native_up_front(struct up_front *f
 		f->halted = 0;
 	}
 	if (f->reorder_stale) {
+		/* Frames held at the stop were read but never finished. */
+		l1_flush_all();
 		ro_reset();
 		f->reorder_stale = 0;
 	}

@@ -95,6 +95,17 @@ middle subframe delivered after the last one still matches its MPDU; a
 second last subframe or a replayed MPDU does not. An RRO stop drops the pool
 with the record queue. Counters are at NPU control words 0x7a0..0x7df.
 
+The cores are Rocket (marchid 1, RV32IMAC) with a data cache each (64-byte
+lines, 64 sets, random replacement) that the radio DMA does not keep
+coherent. Receive buffers are read through their cached alias. Core 1
+drops every line of a frame with `CDISCARD.D.L1` (`pkt-view.h`) before the
+copy to Linux: frames that go to the PPE load only their header lines, so
+without it the body lines of an earlier frame in the same buffer could
+still be cached. Core 0 reads only header lines. Lines 0 and 1 are loaded
+by every frame into the same two sets each, so they are evicted long
+before the buffer comes back; deeper header lines, which few frames load,
+are dropped after the record is written (see `up_front_view()`).
+
 Transmit key counters belong to the radio hardware. The MT7992 driver,
 not this firmware, saves and restores those counters across radio recovery.
 

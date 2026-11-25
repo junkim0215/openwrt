@@ -9,7 +9,7 @@ __attribute__((noinline)) static uint32_t native_rx_security_view(struct pkt_vie
 					uint32_t *cookie, struct pn_cache *pc)
 {
 	uint32_t d0, d1, d2, d4, offset = 32, fc = 0, seq = 0, tid = 0, wcid,
-				 low, high, result, aggregate;
+				 low, high, result, aggregate, bad;
 	volatile uint32_t *entry;
 	if (length < 32)
 		return 0;
@@ -54,6 +54,7 @@ __attribute__((noinline)) static uint32_t native_rx_security_view(struct pkt_vie
 	low = pv_get32(v, offset);
 	high = pv_byte(v, offset + 4) | (uint32_t)pv_byte(v, offset + 5) << 8;
 	aggregate = d4 & 3;
+	bad = 0;
 	if (aggregate == 3 && (d2 & (1U << 7))) {
 		uint32_t ethernet = offset + 16;
 		if (d1 & (1U << 17))
@@ -64,55 +65,58 @@ __attribute__((noinline)) static uint32_t native_rx_security_view(struct pkt_vie
 				ethernet += 96;
 		}
 		ethernet += 2 * ((d2 >> 13) & 7);
-		if (ethernet > length || length - ethernet < 14 ||
-		    (pv_byte(v, ethernet) == 0xaa && pv_byte(v, ethernet + 1) == 0xaa &&
-		     pv_byte(v, ethernet + 2) == 3 && !pv_byte(v, ethernet + 3) &&
-		     !pv_byte(v, ethernet + 4) && !pv_byte(v, ethernet + 5))) {
-			ES(40 + tid, 0);
-			return (wcid << 4) | 2;
-		}
-	}
-	if (aggregate && aggregate != 3) {
-		uint32_t marker = EG(40 + tid);
-
-		/* The marker stays after the last subframe, marked closed: the
-		 * radio can deliver a middle subframe after the last one. Same
-		 * sequence number and PN as the MPDU accepted last, so it
-		 * belongs to it. A closed MPDU takes no second last subframe;
-		 * the next MPDU or single MSDU replaces the marker.
+		/* A first subframe that looks like an LLC/SNAP header: A-MSDU
+		 * injection. The MPDU is dropped.
 		 */
-		result = ((marker & ~0x20000U) == (0x10000 | (seq >> 4)) &&
-			  !(aggregate == 1 && (marker & 0x20000)) &&
-			  EG(4 + tid * 2) == low &&
-			  EG(5 + tid * 2) == high) ?
-				 1 :
-				 0;
-		if (aggregate == 1 && result)
-			ES(40 + tid, marker | 0x20000);
-	} else {
-		if (pc) {
-			/* pn_compare() on the cached entry; key word checked above. */
-			uint32_t old_low = EG(4 + tid * 2), old_high = EG(5 + tid * 2);
+		bad = ethernet > length || length - ethernet < 14 ||
+		      (pv_byte(v, ethernet) == 0xaa && pv_byte(v, ethernet + 1) == 0xaa &&
+		       pv_byte(v, ethernet + 2) == 3 && !pv_byte(v, ethernet + 3) &&
+		       !pv_byte(v, ethernet + 4) && !pv_byte(v, ethernet + 5));
+	}
+	/* A-MSDU subframes share the sequence number and PN of their MPDU.
+	 * The radio does not keep them in order: MediaTek clients interleave
+	 * the subframes of several MPDUs, a middle subframe can come after the
+	 * last one, and a subframe for the access point itself can come before
+	 * the first one. So any subframe with a new PN opens its MPDU, and the
+	 * marker (0x10000 | sequence) records which subframes of it were seen:
+	 * 0x40000 the first, 0x20000 the last, 0x80000 a bad first one. Further
+	 * subframes of that MPDU need the same sequence number and PN; middles
+	 * are taken in any order, a second first or last subframe is not, nor
+	 * anything after a bad first one. A replayed first subframe closes the
+	 * MPDU for all its subframes.
+	 */
+	{
+		uint32_t old_low = EG(4 + tid * 2), old_high = EG(5 + tid * 2);
+		uint32_t old_marker = EG(40 + tid), marker = old_marker;
+		uint32_t seen = aggregate == 3 ? 0x40000 :
+				aggregate == 1 ? 0x20000 : 0;
 
-			if (tid > 16 || high > 65535)
-				result = 3;
-			else if (high < old_high ||
-				 (high == old_high && low <= old_low))
-				result = 0;
-			else {
-				ES(4 + tid * 2, low);
-				ES(5 + tid * 2, high);
-				ES(40 + tid, 0);
-				result = 1;
-			}
+		if (aggregate && (marker & 0x10000) &&
+		    (marker & 0xfff) == (seq >> 4) &&
+		    low == old_low && high == old_high) {
+			result = !bad && !(marker & (seen | 0x80000));
+			if (result)
+				marker |= seen;
+			else if (bad)
+				marker |= 0x80000;
+			else if (aggregate == 3)
+				marker = 0;
+		} else if (high > old_high ||
+			   (high == old_high && low > old_low)) {
+			ES(4 + tid * 2, low);
+			ES(5 + tid * 2, high);
+			result = !bad;
+			marker = aggregate ? 0x10000 | (seq >> 4) | seen |
+						     (bad ? 0x80000 : 0) :
+					     0;
 		} else {
-			result = pn_compare(wcid, tid, low, high);
+			result = 0;
+			if (aggregate == 3)
+				/* A replayed MPDU: none of its subframes may follow. */
+				marker = 0;
 		}
-		if (aggregate == 3 && result == 1)
-			ES(40 + tid, 0x10000 | (seq >> 4));
-		else if (aggregate == 3)
-			/* A replayed MPDU: none of its subframes may follow. */
-			ES(40 + tid, 0);
+		if (marker != old_marker)
+			ES(40 + tid, marker);
 	}
 	*cookie = EG(1);
 	return (wcid << 4) | (result == 1 ? 1 : 2);

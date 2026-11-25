@@ -165,5 +165,59 @@ int main(void)
 	packet[16] = 3;
 	put32(packet + 48, 5);
 	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	/* A subframe can come before the first one of its MPDU. */
+	put32(packet + 48, 6);
+	packet[16] = 2;
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	packet[16] = 1;
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	packet[16] = 3;
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	/* A second first subframe is a replay and closes the MPDU. */
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	packet[16] = 2;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	/* A bad first subframe after an early middle closes the MPDU too. */
+	put32(packet + 48, 7);
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	packet[64] = 0xaa;
+	packet[65] = 0xaa;
+	packet[66] = 3;
+	packet[16] = 3;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	packet[64] = 2;
+	packet[65] = 0;
+	packet[66] = 0;
+	packet[16] = 1;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	packet[16] = 2;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	/* A bad first subframe with a new PN: nothing of its MPDU follows. */
+	put32(packet + 48, 8);
+	packet[64] = 0xaa;
+	packet[65] = 0xaa;
+	packet[66] = 3;
+	packet[16] = 3;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	packet[64] = 2;
+	packet[65] = 0;
+	packet[66] = 0;
+	packet[16] = 2;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	packet[16] = 1;
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	/* Any subframe opens a new MPDU; one last subframe per MPDU. */
+	put32(packet + 48, 9);
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	assert(native_rx_security(packet, 128, &cookie) == 0x32);
+	packet[16] = 2;
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	packet[16] = 3;
+	assert(native_rx_security(packet, 128, &cookie) == 0x31);
+	/* An older PN is refused in every position. */
+	put32(packet + 48, 8);
+	for (packet[16] = 0; packet[16] < 4; packet[16]++)
+		assert(native_rx_security(packet, 128, &cookie) == 0x32);
 	puts("PASS: PN replay/duplicate/carry, TID isolation, key revocation/reset, bounds and command ordering");
 }

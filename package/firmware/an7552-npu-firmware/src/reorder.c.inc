@@ -9,7 +9,8 @@
  * arrival order rejects those frames as replays.
  *
  * Most clients send in sequence, so reordering starts for a station and TID
- * only after RO_TRIGGER replay rejections within RO_TRIGGER_WINDOW, and
+ * only after RO_TRIGGER replay rejections at least RO_TRIGGER_GAP apart
+ * within RO_TRIGGER_WINDOW, and
  * stops after RO_QUIET without a frame out of sequence. Without a session a
  * frame costs one load here.
  *
@@ -45,8 +46,9 @@
 /* Subframes of an open A-MSDU follow within microseconds. */
 #define RO_OPEN_TIMEOUT 686000U	/* an open A-MSDU closes after about 1 ms */
 #define RO_IDLE 68600000U	/* sequence restart after about 100 ms idle */
-#define RO_TRIGGER 8U		/* replay rejections that start a session */
+#define RO_TRIGGER 3U		/* replay rejections that start a session */
 #define RO_TRIGGER_WINDOW 34300000U	/* ... within about 50 ms */
+#define RO_TRIGGER_GAP 1372000U	/* ... counted at most once in about 2 ms */
 #define RO_QUIET 686000000U	/* a session ends after about 1 s in order */
 #define RO_STATE_SRAM 0x3e901820U
 #define RO_SN_MASK 4095U
@@ -84,6 +86,7 @@ struct ro_state {
 	uint32_t busy;		/* sessions that hold frames or are ready */
 	uint32_t active;	/* sessions in use */
 	uint32_t rejects, reject_since;	/* replay rejections, trigger window */
+	uint32_t reject_last;	/* cycle count of the last rejection counted */
 	uint32_t last;		/* session of the previous frame */
 	uint32_t now;		/* cycle count read for the current frame */
 	struct ro_desc pending;
@@ -320,7 +323,8 @@ static void ro_start(uint32_t key, uint32_t now)
 }
 
 /* The replay check rejected a frame the RRO did not mark: after
- * RO_TRIGGER of them in a short time, reorder that station and TID.
+ * RO_TRIGGER of them spread over a short time (lasting disorder, not one
+ * burst), reorder that station and TID.
  */
 static void ro_rejected(struct pkt_view *view, const struct ro_desc *d)
 {
@@ -334,7 +338,14 @@ static void ro_rejected(struct pkt_view *view, const struct ro_desc *d)
 	if (!r->rejects || now - r->reject_since > RO_TRIGGER_WINDOW) {
 		r->rejects = 0;
 		r->reject_since = now;
+	} else if (now - r->reject_last < RO_TRIGGER_GAP) {
+		/* One burst counts once: a client that sends in sequence
+		 * loses a few frames at a rare disorder, while a session
+		 * would cost it a third of core 0 for every frame.
+		 */
+		return;
 	}
+	r->reject_last = now;
 	if (++r->rejects >= RO_TRIGGER) {
 		r->rejects = 0;
 		ro_start(key, now);

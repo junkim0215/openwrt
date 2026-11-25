@@ -83,16 +83,24 @@ delivers them in air order. A client sending one TID to several destination
 addresses transmits interleaved sequence ranges, and MediaTek clients also
 interleave the A-MSDU subframes of several MPDUs. Core 0 therefore reorders
 before the replay checks (`reorder.c.inc`) for a station and TID whose frames
-the replay check rejected 8 times within 50 ms, until a second passes with
-every frame in sequence; other traffic takes the direct path. Frames in
+the replay check rejected at 3 moments at least 2 ms apart within 50 ms,
+until a second passes with every frame in sequence; other traffic takes the
+direct path. A single burst of rejections does not start it: a client that
+sends in sequence would lose a few frames to it, while reordering costs
+about a third more core 0 time for every frame. Frames in
 sequence go straight on; otherwise the completion descriptor waits in a
 1536-entry pool (0x84298000..0x8429ffff, a 512-sequence window for each of
 8 sessions) until
 its MPDU is complete (single MSDU, or first and last subframe) and next in
 sequence, the window moves or 20 ms pass. Subframes leave sorted first,
-middle..., last. The A-MSDU replay marker stays after the last subframe, so a
-middle subframe delivered after the last one still matches its MPDU; a
-second last subframe or a replayed MPDU does not. An RRO stop drops the pool
+middle..., last. The replay check does not depend on subframe order either:
+the radio can deliver a middle subframe after the last one, and a subframe
+addressed to the access point itself before the first one. Any subframe with
+a new PN opens its MPDU; the A-MSDU marker keeps the sequence number and which
+of the first and last subframes were seen, so further subframes with the same
+sequence number and PN match it in any order, while a second first or last
+subframe, a replayed MPDU or the rest of an MPDU with a bad first subframe
+does not. An RRO stop drops the pool
 with the record queue. Counters are at NPU control words 0x7a0..0x7df.
 
 The cores are Rocket (marchid 1, RV32IMAC) with a data cache each (64-byte
